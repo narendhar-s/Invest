@@ -1,0 +1,105 @@
+server:
+  port: 8080
+  open_browser: true
+
+database:
+  host: localhost
+  port: 5432
+  user: stockwise
+  password: stockwise123
+  name: stockwise_db
+  sslmode: disable
+  timezone: Asia/Kolkata
+
+data:
+  refresh_interval_hours: 6
+  history_days: 365
+  intraday_interval: "5m"
+  intraday_range: "5d"
+
+markets:
+  nse:
+    enabled: true
+    symbols:
+      - RELIANCE.NS
+      - TCS.NS
+      - HDFCBANK.NS
+      - INFY.NS
+      - ICICIBANK.NS
+      - HINDUNILVR.NS
+      - SBIN.NS
+      - BHARTIARTL.NS
+      - ITC.NS
+      - KOTAKBANK.NS
+      - LT.NS
+      - AXISBANK.NS
+      - ASIANPAINT.NS
+      - MARUTI.NS
+      - TITAN.NS
+      - BAJFINANCE.NS
+      - WIPRO.NS
+      - HCLTECH.NS
+      - ULTRACEMCO.NS
+      - NESTLEIND.NS
+      - SUNPHARMA.NS
+      - ONGC.NS
+      - NTPC.NS
+      - POWERGRID.NS
+      - ADANIENT.NS
+    indices:
+      - "^NSEI"
+      - "^NSEBANK"
+
+  us:
+    enabled: true
+    symbols:
+      - AAPL
+      - MSFT
+      - GOOGL
+      - AMZN
+      - NVDA
+      - META
+      - TSLA
+      - JPM
+      - JNJ
+      - V
+      - PG
+      - MA
+      - UNH
+      - HD
+      - BAC
+      - XOM
+      - CVX
+      - ABBV
+      - PFE
+      - COST
+      - NFLX
+      - ADBE
+      - CRM
+      - AMD
+      - INTC
+      - GLD
+    indices:
+      - "^GSPC"
+      - "^IXIC"
+
+indicators:
+  ma_periods: [20, 50, 200]
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std_dev: 2.0
+  vwap_period: 14
+
+recommendation:
+  strong_buy_threshold: 75
+  buy_threshold: 55
+  hold_threshold: 35
+  min_confidence: 20
+
+backtest:
+  default_capital: 100000
+  commission_pct: 0.1
+  slippage_pct: 0.05

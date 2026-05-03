@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /Users/narendhar/Documents/Invest/internal/**/*.go)",
+      "Bash(open -a Docker)",
+      "Bash(docker info:*)",
+      "Bash(break)",
+      "Bash(./bin/stockwise)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(echo \"Frontend PID: $!\")",
+      "Bash(curl -s http://localhost:8080/api/v1/signals/scalping?timeframe=1m'&'scope=nse)",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/scalping?timeframe=1m&scope=nse')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/scalping?timeframe=5m&scope=nse')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/scalping?timeframe=15m&scope=nse')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/scalping?timeframe=1m&scope=index')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/scalping?timeframe=5m&scope=index')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/scalping?timeframe=15m&scope=index')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/index?market=NSE')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/signals/index?market=US')",
+      "Bash(curl -s 'http://localhost:8080/api/v1/dashboard')",
+      "Bash(curl -s 'https://query1.finance.yahoo.com/v8/finance/chart/RELIANCE.NS?interval=5m&range=10d&includePrePost=false' -H 'User-Agent: Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36' -H 'Accept: application/json')",
+      "Bash(python3 -c ':*)",
+      "Bash(curl -s 'https://query1.finance.yahoo.com/v8/finance/chart/RELIANCE.NS?interval=5m&range=1mo&includePrePost=false' -H 'User-Agent: Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36' -H 'Accept: application/json')",
+      "Bash(curl -s 'https://query1.finance.yahoo.com/v8/finance/chart/RELIANCE.NS?interval=15m&range=1mo&includePrePost=false' -H 'User-Agent: Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36' -H 'Accept: application/json')",
+      "Bash(pkill -f bin/stockwise)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'1m signals: {d[\\\\\"count\\\\\"]}'\\); [print\\(f'  {s[\\\\\"symbol\\\\\"]:20s} {s[\\\\\"direction\\\\\"]:4s} {s[\\\\\"strategy\\\\\"]:30s} conf={s[\\\\\"confidence\\\\\"]}%'\\) for s in \\(d['signals'] or []\\)]\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'5m signals: {d[\\\\\"count\\\\\"]}'\\); [print\\(f'  {s[\\\\\"symbol\\\\\"]:20s} {s[\\\\\"direction\\\\\"]:4s} {s[\\\\\"strategy\\\\\"]:30s} conf={s[\\\\\"confidence\\\\\"]}%'\\) for s in \\(d['signals'] or []\\)]\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'15m signals: {d[\\\\\"count\\\\\"]}'\\); [print\\(f'  {s[\\\\\"symbol\\\\\"]:20s} {s[\\\\\"direction\\\\\"]:4s} {s[\\\\\"strategy\\\\\"]:30s} conf={s[\\\\\"confidence\\\\\"]}%'\\) for s in \\(d['signals'] or []\\)]\")"
+    ]
+  }
+}

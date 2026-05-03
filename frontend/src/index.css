@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: #0a0e1a;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f1629; }
+::-webkit-scrollbar-thumb { background: #1e3a8a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2563eb; }
+
+/* Lightweight charts container */
+.chart-container { position: relative; }
+
+/* Spinner */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 1s linear infinite; }
+
+/* Glow effect for recommendation badges */
+.glow-green { box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); }
+.glow-red { box-shadow: 0 0 12px rgba(239, 68, 68, 0.4); }
+.glow-yellow { box-shadow: 0 0 12px rgba(245, 158, 11, 0.4); }
+.glow-blue { box-shadow: 0 0 12px rgba(59, 130, 246, 0.4); }
+
+/* Card hover */
+.stock-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.stock-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+
+/* Number formatting */
+.positive { color: #10b981; }
+.negative { color: #ef4444; }
+.neutral { color: #94a3b8; }
