@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getPortfolio, buyMore, sellPartial, type HoldingMetrics, type PortfolioData, type SectorAlloc } from '../api/client'
+import { getPortfolio, buyMore, sellPartial, getUndervaluedStocks, type HoldingMetrics, type PortfolioData, type SectorAlloc, type UndervaluedStock } from '../api/client'
 import LoadingSpinner from '../components/LoadingSpinner'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -464,9 +464,146 @@ function SummaryCard({ label, value, sub, color = 'text-white', icon }: {
   )
 }
 
+// ── Undervalued Stocks Section ────────────────────────────────────────────────
+
+const ACTION_BADGE: Record<string, { label: string; color: string; bg: string }> = {
+  ADD_MORE: { label: 'ADD MORE',  color: 'text-emerald-300', bg: 'bg-emerald-500/20' },
+  NEW_BUY:  { label: 'NEW BUY',  color: 'text-blue-300',    bg: 'bg-blue-500/20' },
+  WATCH:    { label: 'WATCH',    color: 'text-amber-300',   bg: 'bg-amber-500/15' },
+}
+
+function UndervaluedSection() {
+  const [stocks, setStocks] = useState<UndervaluedStock[]>([])
+  const [loading, setLoading] = useState(true)
+  const [market, setMarket] = useState<'all' | 'NSE' | 'US'>('all')
+
+  useEffect(() => {
+    setLoading(true)
+    getUndervaluedStocks(market === 'all' ? undefined : market)
+      .then(d => setStocks(d.undervalued ?? []))
+      .catch(() => setStocks([]))
+      .finally(() => setLoading(false))
+  }, [market])
+
+  if (loading) return <LoadingSpinner size="sm" text="Scanning for undervalued stocks..." />
+
+  return (
+    <div>
+      {/* Sub-filters */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-sm text-slate-400">
+          {stocks.length} undervalued stocks identified using P/E, P/B, EPS Growth, ROE and Technical filters
+        </div>
+        <div className="flex gap-1 bg-dark-800 rounded-xl p-1">
+          {(['all', 'NSE', 'US'] as const).map(m => (
+            <button key={m} onClick={() => setMarket(m)}
+              className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${market === m ? 'bg-brand-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>
+              {m === 'all' ? 'All' : m}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {stocks.length === 0 ? (
+        <div className="text-slate-500 text-sm py-12 text-center bg-dark-700 border border-slate-800/60 rounded-xl">
+          No clearly undervalued stocks found at current prices. Market may be fairly/over-valued.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {stocks.map(s => {
+            const actionCfg = ACTION_BADGE[s.portfolio_action] ?? ACTION_BADGE.WATCH
+            const cc = s.market === 'US' ? '$' : '₹'
+            return (
+              <div key={s.symbol} className={`bg-dark-700 border rounded-xl p-4 hover:border-slate-600 transition-colors ${s.in_portfolio ? 'border-emerald-700/50' : 'border-slate-800/60'}`}>
+                {/* Header */}
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white text-sm">{s.symbol}</span>
+                      {s.in_portfolio && <span className="text-xs text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/30">In Portfolio</span>}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate max-w-[160px] mt-0.5">{s.name || s.symbol}</div>
+                    <div className="text-xs text-slate-600">{s.sector} · {s.market}</div>
+                  </div>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${actionCfg.bg} ${actionCfg.color}`}>
+                    {actionCfg.label}
+                  </span>
+                </div>
+
+                {/* Price + upside */}
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <div className="text-lg font-bold font-mono text-white">{cc}{s.current_price.toLocaleString()}</div>
+                    <div className="text-xs text-slate-500">Current Price</div>
+                  </div>
+                  {s.fair_value_est > s.current_price && (
+                    <div className="text-right">
+                      <div className="text-sm font-bold text-emerald-400">+{s.upside_pct.toFixed(1)}%</div>
+                      <div className="text-xs text-slate-500">Est. Upside</div>
+                      <div className="text-xs text-slate-600 font-mono">{cc}{s.fair_value_est.toLocaleString()}</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Key metrics grid */}
+                <div className="grid grid-cols-3 gap-1.5 mb-3">
+                  {[
+                    { label: 'P/E', value: s.pe_ratio > 0 ? s.pe_ratio.toFixed(1) : '—', color: s.pe_ratio > 0 && s.pe_ratio < 20 ? 'text-emerald-400' : 'text-slate-300' },
+                    { label: 'P/B', value: s.price_to_book > 0 ? s.price_to_book.toFixed(1) : '—', color: s.price_to_book > 0 && s.price_to_book < 2 ? 'text-emerald-400' : 'text-slate-300' },
+                    { label: 'ROE%', value: s.roe_pct > 0 ? s.roe_pct.toFixed(0)+'%' : '—', color: s.roe_pct >= 15 ? 'text-emerald-400' : 'text-slate-300' },
+                    { label: 'EPS%', value: s.eps_growth_pct !== 0 ? (s.eps_growth_pct > 0 ? '+' : '') + s.eps_growth_pct.toFixed(0)+'%' : '—', color: s.eps_growth_pct > 10 ? 'text-emerald-400' : s.eps_growth_pct < 0 ? 'text-red-400' : 'text-slate-300' },
+                    { label: 'D/E', value: s.debt_equity > 0 ? s.debt_equity.toFixed(2) : '—', color: s.debt_equity < 0.5 ? 'text-emerald-400' : s.debt_equity > 2 ? 'text-red-400' : 'text-slate-300' },
+                    { label: 'RSI', value: s.rsi > 0 ? s.rsi.toFixed(0) : '—', color: s.rsi < 35 ? 'text-emerald-400' : s.rsi > 70 ? 'text-red-400' : 'text-amber-400' },
+                  ].map(item => (
+                    <div key={item.label} className="bg-dark-800/60 rounded p-1.5 text-center">
+                      <div className="text-xs text-slate-500">{item.label}</div>
+                      <div className={`text-xs font-mono font-bold ${item.color}`}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Value score */}
+                <div className="mb-3">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-500">Value Score</span>
+                    <span className={`font-bold ${s.value_score >= 70 ? 'text-emerald-400' : s.value_score >= 50 ? 'text-amber-400' : 'text-slate-400'}`}>
+                      {s.value_score.toFixed(0)}/100
+                    </span>
+                  </div>
+                  <div className="w-full bg-dark-800 rounded-full h-1.5">
+                    <div
+                      className={`h-1.5 rounded-full ${s.value_score >= 70 ? 'bg-emerald-500' : s.value_score >= 50 ? 'bg-amber-500' : 'bg-slate-600'}`}
+                      style={{ width: `${Math.min(s.value_score, 100)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Why undervalued */}
+                {s.reasons && s.reasons.length > 0 && (
+                  <div className="text-xs text-slate-400 leading-relaxed border-t border-slate-800/40 pt-2">
+                    {s.reasons.slice(0, 2).map((r, i) => (
+                      <div key={i} className="flex items-start gap-1 mb-0.5">
+                        <span className="text-emerald-500 mt-0.5 shrink-0">✓</span>
+                        <span>{r}</span>
+                      </div>
+                    ))}
+                    {s.reasons.length > 2 && (
+                      <div className="text-slate-600 text-xs mt-1">+{s.reasons.length - 2} more reasons</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Portfolio Page ────────────────────────────────────────────────────────
 
-type ViewTab = 'all' | 'india' | 'us' | 'alerts' | 'sectors'
+type ViewTab = 'all' | 'india' | 'us' | 'alerts' | 'sectors' | 'undervalued'
 type SortKey = 'pnl_pct' | 'invested_value' | 'portfolio_weight' | 'symbol' | 'zone'
 
 export default function Portfolio() {
@@ -592,11 +729,12 @@ export default function Portfolio() {
       {/* Tabs */}
       <div className="flex gap-2 mb-5 flex-wrap">
         {([
-          ['all',     `All (${data.holdings.length})`],
-          ['india',   `India (${nseHoldings.length})`],
-          ['us',      `US (${usHoldings.length})`],
-          ['alerts',  `Alerts (${alerts?.length ?? 0})`],
-          ['sectors', 'Sectors'],
+          ['all',         `All (${data.holdings.length})`],
+          ['india',       `India (${nseHoldings.length})`],
+          ['us',          `US (${usHoldings.length})`],
+          ['alerts',      `Alerts (${alerts?.length ?? 0})`],
+          ['sectors',     'Sectors'],
+          ['undervalued', 'Undervalued'],
         ] as [ViewTab, string][]).map(([t, label]) => (
           <button
             key={t}
@@ -616,6 +754,23 @@ export default function Portfolio() {
           </button>
         ))}
       </div>
+
+      {/* Undervalued tab */}
+      {tab === 'undervalued' && (
+        <div className="bg-dark-700 border border-slate-800/60 rounded-xl p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <span className="text-2xl">💎</span>
+            <div>
+              <h2 className="text-lg font-bold text-white">Undervalued Stocks</h2>
+              <p className="text-xs text-slate-500">
+                Stocks trading below estimated fair value — candidates for 5–10 year accumulation.
+                Filter: P/E &lt; 25, P/B &lt; 2.5, ROE &gt; 10%, D/E &lt; 1.5, positive EPS growth.
+              </p>
+            </div>
+          </div>
+          <UndervaluedSection />
+        </div>
+      )}
 
       {/* Sector Breakdown tab */}
       {tab === 'sectors' && (
@@ -668,7 +823,7 @@ export default function Portfolio() {
       )}
 
       {/* Holdings Table */}
-      {tab !== 'sectors' && (
+      {tab !== 'sectors' && tab !== 'undervalued' && (
         <>
           {holdings.length === 0 ? (
             <div className="text-slate-500 text-sm py-12 text-center bg-dark-700 border border-slate-800/60 rounded-xl">

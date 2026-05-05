@@ -182,6 +182,21 @@ func (e *Engine) Compute() (*PortfolioData, error) {
 	}, nil
 }
 
+// isMutualFund returns true for holdings that are NAV-based mutual funds
+// (not exchange-traded, so price data may be unavailable from Yahoo Finance).
+func isMutualFund(h storage.PortfolioHolding) bool {
+	return h.Sector == "Flexi Cap Fund" ||
+		h.Sector == "Debt Fund" ||
+		h.Sector == "Hybrid Fund" ||
+		h.Sector == "Index Fund" && h.Symbol == "PPFCF"
+}
+
+// isIndexFundETF returns true for index ETFs (NIFTY Next 50, etc.)
+func isIndexFundETF(h storage.PortfolioHolding) bool {
+	return h.Symbol == "ICICI_NIFTY_NEXT50" ||
+		h.Sector == "Index Fund"
+}
+
 func (e *Engine) computeHolding(h storage.PortfolioHolding) HoldingMetrics {
 	m := HoldingMetrics{
 		Symbol:      h.Symbol,
@@ -416,38 +431,71 @@ func (e *Engine) computeRiskAction(m *HoldingMetrics) {
 }
 
 func (e *Engine) checkAlerts(m *HoldingMetrics) {
-	alerts := []string{}
+	var redFlags []string
+	var infoAlerts []string
 
-	if m.CurrentPrice > 0 {
-		// Drawdown alert
-		if m.PnLPct < -10 {
-			alerts = append(alerts, fmt.Sprintf("⚠️ %.1f%% drawdown from avg cost", m.PnLPct))
-		}
-		// Strong buy zone
-		if m.Zone == ZoneStrongAccumulate {
-			alerts = append(alerts, fmt.Sprintf("🟢 STRONG ACCUMULATION ZONE — cur ₹%.2f, zone ₹%.2f–₹%.2f", m.CurrentPrice, m.ZoneLow, m.ZoneHigh))
-		}
-		// Stop loss zone
-		if m.Zone == ZoneStopLoss {
-			alerts = append(alerts, fmt.Sprintf("🔴 STOP LOSS TRIGGERED — review position immediately"))
-		}
-		// Profit booking
-		if m.Zone == ZoneProfitBooking {
-			alerts = append(alerts, fmt.Sprintf("💰 PROFIT ZONE — +%.1f%% gain, consider booking 30-50%%", m.PnLPct))
-		}
-		// RSI overbought
-		if m.RSI > 75 {
-			alerts = append(alerts, fmt.Sprintf("🔥 RSI overbought at %.0f — momentum may reverse", m.RSI))
-		}
-		// RSI oversold
-		if m.RSI < 30 && m.RSI > 0 {
-			alerts = append(alerts, fmt.Sprintf("📉 RSI oversold at %.0f — potential reversal", m.RSI))
+	// Mutual fund / index fund specific guidance
+	if m.Sector == "Flexi Cap Fund" || m.Sector == "Index Fund" {
+		infoAlerts = append(infoAlerts, fmt.Sprintf("📋 %s — Long-term 5-10yr horizon. Continue SIP. Review only on major market corrections (>20%%). No scalp/BTST.", m.DisplayName))
+		if m.PnLPct < -15 {
+			infoAlerts = append(infoAlerts, fmt.Sprintf("💡 Down %.1f%% — ideal for SIP top-up or lump-sum addition on this dip. Long-term thesis intact.", m.PnLPct))
+		} else if m.PnLPct > 30 {
+			infoAlerts = append(infoAlerts, fmt.Sprintf("💡 Up %.1f%% — continue SIP, avoid redemption. Let compounding work.", m.PnLPct))
 		}
 	}
 
-	if len(alerts) > 0 {
+	if m.CurrentPrice > 0 {
+		// ── Red flags (critical — review immediately) ────────────────────────
+		if m.Zone == ZoneStopLoss {
+			redFlags = append(redFlags, "🔴 STOP LOSS TRIGGERED — review position immediately. Consider exiting to protect capital.")
+		}
+		if m.PnLPct < -18 {
+			redFlags = append(redFlags, fmt.Sprintf("🔴 SEVERE DRAWDOWN %.1f%% — thesis may be broken. Re-evaluate holding.", m.PnLPct))
+		}
+		if m.Trend == "DOWN" && m.RSI < 40 && m.PnLPct < -10 {
+			redFlags = append(redFlags, fmt.Sprintf("🔴 DOWNTREND + WEAK RSI (%.0f) + %.1f%% loss — high capital risk. Await reversal signal.", m.RSI, m.PnLPct))
+		}
+		if m.MACDHist < 0 && m.Trend == "DOWN" && m.PnLPct < -8 {
+			redFlags = append(redFlags, "🔴 MACD bearish + Downtrend — no recovery signal yet. Tight stop-loss recommended.")
+		}
+
+		// ── Warnings ─────────────────────────────────────────────────────────
+		if m.PnLPct < -10 && m.Zone != ZoneStopLoss {
+			redFlags = append(redFlags, fmt.Sprintf("⚠️ %.1f%% drawdown from avg cost — monitor closely", m.PnLPct))
+		}
+		if m.RSI > 75 {
+			redFlags = append(redFlags, fmt.Sprintf("⚠️ RSI overbought at %.0f — momentum may reverse soon. Consider partial profit booking.", m.RSI))
+		}
+		if m.TechnicalScore > 0 && m.TechnicalScore < 30 {
+			redFlags = append(redFlags, fmt.Sprintf("⚠️ Technical score very weak (%.0f/100) — multiple indicators bearish", m.TechnicalScore))
+		}
+
+		// ── Info / opportunities ──────────────────────────────────────────────
+		if m.Zone == ZoneStrongAccumulate {
+			cc := "₹"
+			if m.Currency == "USD" {
+				cc = "$"
+			}
+			infoAlerts = append(infoAlerts, fmt.Sprintf("🟢 STRONG ACCUMULATION ZONE — %s%.2f in range %s%.2f–%s%.2f. Long-term hold: add on dips.", cc, m.CurrentPrice, cc, m.ZoneLow, cc, m.ZoneHigh))
+		}
+		if m.Zone == ZonePartialAccumulate && m.RSI < 45 {
+			infoAlerts = append(infoAlerts, fmt.Sprintf("🟡 Accumulation zone with RSI %.0f — consider adding 25–50%% of intended allocation", m.RSI))
+		}
+		if m.Zone == ZoneProfitBooking {
+			infoAlerts = append(infoAlerts, fmt.Sprintf("💰 PROFIT ZONE — +%.1f%% gain. Consider booking 30–50%% at current levels.", m.PnLPct))
+		}
+		if m.RSI < 30 && m.RSI > 0 {
+			infoAlerts = append(infoAlerts, fmt.Sprintf("📉 RSI oversold at %.0f — high-probability bounce zone for long-term holders", m.RSI))
+		}
+		if m.VolumeSpike && m.Trend == "UP" && m.RSI < 65 {
+			infoAlerts = append(infoAlerts, "📊 Volume spike in uptrend — institutional accumulation detected")
+		}
+	}
+
+	allAlerts := append(redFlags, infoAlerts...)
+	if len(allAlerts) > 0 {
 		m.HasAlert = true
-		m.AlertMessage = strings.Join(alerts, " | ")
+		m.AlertMessage = strings.Join(allAlerts, " | ")
 	}
 }
 
@@ -579,19 +627,34 @@ func buildAlerts(metrics []HoldingMetrics) []Alert {
 		}
 		severity := "info"
 		aType := "general"
-		if m.Zone == ZoneStopLoss {
+
+		switch {
+		case m.Zone == ZoneStopLoss:
 			severity = "critical"
 			aType = "stop_loss"
-		} else if m.Zone == ZoneStrongAccumulate {
-			severity = "info"
-			aType = "accumulation"
-		} else if m.Zone == ZoneProfitBooking {
+		case m.PnLPct < -18:
+			severity = "critical"
+			aType = "severe_drawdown"
+		case m.Trend == "DOWN" && m.PnLPct < -10 && m.RSI < 40:
+			severity = "critical"
+			aType = "red_flag"
+		case m.Zone == ZoneProfitBooking:
 			severity = "warning"
 			aType = "profit_zone"
-		} else if m.PnLPct < -10 {
+		case m.PnLPct < -10:
 			severity = "warning"
 			aType = "drawdown"
+		case m.RSI > 75:
+			severity = "warning"
+			aType = "overbought"
+		case m.Zone == ZoneStrongAccumulate:
+			severity = "info"
+			aType = "accumulation"
+		case m.Zone == ZonePartialAccumulate:
+			severity = "info"
+			aType = "accumulation"
 		}
+
 		alerts = append(alerts, Alert{
 			Symbol:   m.Symbol,
 			Type:     aType,
@@ -599,5 +662,11 @@ func buildAlerts(metrics []HoldingMetrics) []Alert {
 			Severity: severity,
 		})
 	}
+
+	// Sort: critical first, then warning, then info
+	sort.Slice(alerts, func(i, j int) bool {
+		order := map[string]int{"critical": 0, "warning": 1, "info": 2}
+		return order[alerts[i].Severity] < order[alerts[j].Severity]
+	})
 	return alerts
 }

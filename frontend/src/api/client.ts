@@ -216,6 +216,220 @@ export const upsertHolding = async (holding: Partial<HoldingMetrics> & { symbol:
   return data
 }
 
+// ─── Undervalued Stocks ───────────────────────────────────────────────────────
+
+export interface UndervaluedStock {
+  symbol:           string
+  name:             string
+  market:           string
+  sector:           string
+  current_price:    number
+  fair_value_est:   number
+  upside_pct:       number
+  pe_ratio:         number
+  price_to_book:    number
+  eps_growth_pct:   number
+  roe_pct:          number
+  debt_equity:      number
+  dividend_yield_pct: number
+  fundamental_score: number
+  technical_score:  number
+  rsi:              number
+  trend:            string
+  value_score:      number
+  reasons:          string[]
+  in_portfolio:     boolean
+  portfolio_action: string  // ADD_MORE | NEW_BUY | WATCH
+}
+
+export interface UndervaluedData {
+  undervalued:  UndervaluedStock[]
+  count:        number
+  market:       string
+  generated_at: string
+}
+
+export const getUndervaluedStocks = async (market?: string): Promise<UndervaluedData> => {
+  const { data } = await client.get('/signals/undervalued', { params: { market } })
+  return data
+}
+
+// ─── BTST Signals ─────────────────────────────────────────────────────────────
+
+export interface BTSTSignal {
+  symbol:          string
+  name:            string
+  market:          string
+  sector:          string
+  entry_price:     number
+  target_price:    number
+  stop_loss:       number
+  risk_reward:     number
+  confidence:      number
+  strategy:        string
+  reasons:         string[]
+  rsi:             number
+  trend:           string
+  volume_ratio:    number
+  technical_score: number
+  exit_time:       string
+  generated_at:    string
+}
+
+export interface BTSTData {
+  signals:      BTSTSignal[]
+  count:        number
+  market:       string
+  generated_at: string
+  note:         string
+}
+
+export const getBTSTSignals = async (): Promise<BTSTData> => {
+  const { data } = await client.get('/signals/btst')
+  return data
+}
+
+// ─── Scalping Backtest ────────────────────────────────────────────────────────
+
+export interface ScalpBacktestTrade {
+  date:         string
+  direction:    string
+  entry_price:  number
+  exit_price:   number
+  pnl_pct:      number
+  is_win:       boolean
+  exit_reason:  string
+}
+
+export interface YearlyResult {
+  year:          number
+  trades:        number
+  win_rate:      number
+  net_pnl_pct:   number
+  profit_factor: number
+}
+
+export interface ScalpStrategyResult {
+  strategy_name:       string
+  description:         string
+  symbol:              string
+  period_years:        number
+  total_trades:        number
+  winning_trades:      number
+  losing_trades:       number
+  win_rate:            number
+  avg_win_pct:         number
+  avg_loss_pct:        number
+  profit_factor:       number
+  max_drawdown_pct:    number
+  net_pnl_pct:         number
+  sharpe_ratio:        number
+  expectancy_pct:      number
+  best_trade_pct:      number
+  worst_trade_pct:     number
+  avg_trades_per_month: number
+  yearly_breakdown:    YearlyResult[]
+  recent_trades:       ScalpBacktestTrade[]
+}
+
+export interface BacktestSummary {
+  best_win_rate_strategy:    string
+  best_win_rate_value:       number
+  best_profit_factor_strategy: string
+  best_profit_factor_value:  number
+  best_net_pnl_strategy:     string
+  best_net_pnl_value:        number
+  overall_win_rate:          number
+  total_signals:             number
+  recommendation:            string
+}
+
+export interface ScalpBacktestReport {
+  symbol:       string
+  symbol_name:  string
+  generated_at: string
+  period_years: number
+  data_points:  number
+  strategies:   ScalpStrategyResult[]
+  summary:      BacktestSummary
+}
+
+export const getScalpingBacktest = async (symbol = '^NSEI', years = 5): Promise<ScalpBacktestReport> => {
+  const { data } = await client.get('/backtest/scalping', { params: { symbol, years } })
+  return data
+}
+
+// ─── Long-Term US SIP Picks ───────────────────────────────────────────────────
+
+export interface LongTermUSPick {
+  symbol:              string
+  name:                string
+  sector:              string
+  growth_sector:       string
+  growth_sector_label: string
+  current_price:       number
+  target_3yr_low:      number
+  target_3yr_high:     number
+  expected_cagr_pct:   number
+
+  overall_sip_score:   number
+  fund_score:          number
+  tech_score:          number
+  valuation_score:     number
+  growth_score:        number
+  sip_bonus:           number
+
+  pe_ratio:            number
+  forward_pe:          number
+  price_to_book:       number
+  eps_growth_pct:      number
+  revenue_growth_pct:  number
+  roe_pct:             number
+  roa_pct:             number
+  debt_equity:         number
+  profit_margin_pct:   number
+  dividend_yield_pct:  number
+
+  rsi:                 number
+  trend:               string
+  above_sma200:        boolean
+  ma_trend:            string   // BULLISH | BEARISH | NEUTRAL
+  tech_entry:          string   // GOOD | FAIR | WAIT
+
+  sip_rating:          string   // EXCELLENT | GOOD | FAIR | SPECULATIVE
+  risk_profile:        string   // CONSERVATIVE | MODERATE | AGGRESSIVE
+  monthly_sip_pct:     number
+  valuation_zone:      string   // UNDERVALUED | FAIR | SLIGHTLY_HIGH | OVERVALUED
+
+  thesis:              string[]
+  risks:               string[]
+  best_buy_zone:       string
+  generated_at:        string
+}
+
+export interface SIPSectorItem {
+  growth_sector: string
+  label:         string
+  count:         number
+  avg_score:     number
+  avg_cagr_pct:  number
+  alloc_pct:     number
+}
+
+export interface LongTermUSReport {
+  picks:            LongTermUSPick[]
+  sector_summary:   SIPSectorItem[]
+  total_picks:      number
+  avg_expected_cagr_pct: number
+  sip_methodology:  string
+  generated_at:     string
+}
+
+export const getLongTermUSPicks = async (): Promise<LongTermUSReport> => {
+  const { data } = await client.get('/signals/longterm-us')
+  return data
+}
+
 // ─── Backtest ─────────────────────────────────────────────────────────────────
 
 export const runBacktest = async (symbol: string, strategy = 'RSI_MACD'): Promise<BacktestResult> => {

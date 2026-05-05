@@ -5,6 +5,8 @@ import IndianMarket from './pages/IndianMarket'
 import USMarket from './pages/USMarket'
 import StockDetail from './pages/StockDetail'
 import Portfolio from './pages/Portfolio'
+import BacktestDashboard from './pages/BacktestDashboard'
+import LongTermSIP from './pages/LongTermSIP'
 
 export default function App() {
   return (
@@ -18,6 +20,8 @@ export default function App() {
             <Route path="/us" element={<USMarket />} />
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/stock/:symbol" element={<StockDetail />} />
+            <Route path="/backtest" element={<BacktestDashboard />} />
+            <Route path="/longterm-sip" element={<LongTermSIP />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

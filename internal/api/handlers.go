@@ -7,10 +7,125 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"stockwise/internal/analysis/alpha"
 	"stockwise/internal/storage"
 	"stockwise/internal/strategy"
 	"stockwise/pkg/config"
 )
+
+
+// ─── BTST Signals ─────────────────────────────────────────────────────────────
+
+// BTSTSignals generates Buy-Today-Sell-Tomorrow signals for NSE stocks.
+func (h *Handler) BTSTSignals(c *gin.Context) {
+	stocks, err := h.repo.GetStocksByMarket("NSE")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	to := time.Now()
+	from := to.AddDate(-1, 0, 0)
+
+	barsMap := map[uint][]storage.PriceBar{}
+	indMap := map[uint]*storage.TechnicalIndicator{}
+	srMap := map[uint][]storage.SupportResistanceLevel{}
+
+	for _, stock := range stocks {
+		if stock.IsIndex {
+			continue
+		}
+		if bars, e := h.repo.GetPriceBars(stock.ID, from, to); e == nil {
+			barsMap[stock.ID] = bars
+		}
+		if ind, e := h.repo.GetLatestTechnicalIndicator(stock.ID); e == nil && ind != nil {
+			indMap[stock.ID] = ind
+		}
+		if sr, e := h.repo.GetSRLevels(stock.ID); e == nil {
+			srMap[stock.ID] = sr
+		}
+	}
+
+	result := alpha.GenerateBTSTSignals(stocks, barsMap, indMap, srMap)
+	c.JSON(http.StatusOK, result)
+}
+
+// ─── Scalping Backtest ────────────────────────────────────────────────────────
+
+// ScalpingBacktest runs historical backtest for all 7 scalping strategies.
+// Defaults to NIFTY 50 (^NSEI); falls back to best available NSE stock with most history.
+func (h *Handler) ScalpingBacktest(c *gin.Context) {
+	sym := c.Query("symbol")
+	if sym == "" {
+		sym = "^NSEI"
+	}
+	years := 5
+	if y := c.Query("years"); y != "" {
+		if parsed, err := strconv.Atoi(y); err == nil && parsed > 0 && parsed <= 10 {
+			years = parsed
+		}
+	}
+
+	// Find the best symbol available — prefer requested, fallback to most data
+	resolvedSym := h.resolveBestSymbol(sym, years)
+	if resolvedSym == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "insufficient data for backtest",
+			"message": "Data pipeline still running. Wait ~10 minutes, then try again.",
+		})
+		return
+	}
+
+	report, err := h.strategyEngine.RunScalpingBacktest(resolvedSym, years)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if report == nil || report.DataPoints == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "insufficient data for backtest",
+			"message": "Data pipeline still running. Wait ~10 minutes, then try again.",
+		})
+		return
+	}
+
+	// Sanitize all float fields to prevent JSON marshaling failure on Inf/NaN
+	strategy.SanitizeBacktestReport(report)
+	c.JSON(http.StatusOK, report)
+}
+
+// resolveBestSymbol finds the best symbol to run a backtest on.
+// Tries the requested symbol first; falls back to the NSE stock with most historical bars.
+func (h *Handler) resolveBestSymbol(preferred string, years int) string {
+	to := time.Now()
+	from := to.AddDate(-years, 0, 0)
+
+	// Check if preferred symbol has enough data
+	if s, err := h.repo.GetStockBySymbol(preferred); err == nil {
+		if bars, err := h.repo.GetPriceBars(s.ID, from, to); err == nil && len(bars) >= 50 {
+			return preferred
+		}
+	}
+
+	// Fallback: find NSE stock with most bars
+	nseStocks, _ := h.repo.GetStocksByMarket("NSE")
+	bestSym := ""
+	maxBars := 0
+	for _, s := range nseStocks {
+		if s.IsIndex {
+			continue
+		}
+		bars, e := h.repo.GetPriceBars(s.ID, from, to)
+		if e == nil && len(bars) > maxBars {
+			maxBars = len(bars)
+			bestSym = s.Symbol
+		}
+	}
+	if maxBars >= 50 {
+		return bestSym
+	}
+	return ""
+}
 
 // Handler holds all API dependencies.
 type Handler struct {
@@ -364,4 +479,106 @@ func (h *Handler) StrategyResults(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"results": results})
+}
+
+// ─── Long-Term US SIP Picks ───────────────────────────────────────────────────
+
+// LongTermUSPicks generates 3-year SIP-optimised picks for US growth stocks.
+// Scores each stock across 5 dimensions: growth sector, fundamentals,
+// valuation, technicals, and SIP suitability.
+func (h *Handler) LongTermUSPicks(c *gin.Context) {
+	stocks, err := h.repo.GetStocksByMarket("US")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	indicators := map[uint]*storage.TechnicalIndicator{}
+	fundamentals := map[uint]*storage.Fundamental{}
+	latestPrices := map[uint]float64{}
+
+	to := time.Now()
+	from := to.AddDate(0, 0, -5)
+
+	for _, stock := range stocks {
+		if stock.IsIndex {
+			continue
+		}
+		if ind, e := h.repo.GetLatestTechnicalIndicator(stock.ID); e == nil && ind != nil {
+			indicators[stock.ID] = ind
+		}
+		if fund, e := h.repo.GetFundamental(stock.ID); e == nil && fund != nil {
+			fundamentals[stock.ID] = fund
+		}
+		if bars, e := h.repo.GetPriceBars(stock.ID, from, to); e == nil && len(bars) > 0 {
+			latestPrices[stock.ID] = bars[len(bars)-1].Close
+		}
+	}
+
+	analyzer := alpha.NewLongTermUSAnalyzer()
+	report := analyzer.GeneratePicks(stocks, indicators, fundamentals, latestPrices)
+	c.JSON(http.StatusOK, report)
+}
+
+// ─── Undervalued Stocks ───────────────────────────────────────────────────────
+
+// UndervaluedStocks scans all tracked stocks for undervalued opportunities
+// using fundamental + technical analysis (P/E, P/B, EPS growth, ROE, RSI).
+func (h *Handler) UndervaluedStocks(c *gin.Context) {
+	market := c.Query("market") // optional: NSE | US | "" = all
+
+	var stocks []storage.Stock
+	var err error
+	if market != "" {
+		stocks, err = h.repo.GetStocksByMarket(market)
+	} else {
+		stocks, err = h.repo.GetAllStocks()
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Build indicator and fundamental maps
+	indicators := map[uint]*storage.TechnicalIndicator{}
+	fundamentals := map[uint]*storage.Fundamental{}
+	latestPrices := map[uint]float64{}
+
+	to := time.Now()
+	from := to.AddDate(0, 0, -5)
+
+	for _, stock := range stocks {
+		if stock.IsIndex {
+			continue
+		}
+		if ind, e := h.repo.GetLatestTechnicalIndicator(stock.ID); e == nil && ind != nil {
+			indicators[stock.ID] = ind
+		}
+		if fund, e := h.repo.GetFundamental(stock.ID); e == nil && fund != nil {
+			fundamentals[stock.ID] = fund
+		}
+		bars, _ := h.repo.GetPriceBars(stock.ID, from, to)
+		if len(bars) > 0 {
+			latestPrices[stock.ID] = bars[len(bars)-1].Close
+		}
+	}
+
+	// Get portfolio symbols for cross-referencing
+	portfolioSymbols := map[string]bool{}
+	if holdings, e := h.repo.GetAllPortfolioHoldings(); e == nil {
+		for _, hld := range holdings {
+			portfolioSymbols[hld.Symbol] = true
+			portfolioSymbols[hld.YFSymbol] = true
+		}
+	}
+
+	analyzer := alpha.NewUndervaluedAnalyzer()
+	undervalued := analyzer.FindUndervalued(stocks, indicators, fundamentals, latestPrices, portfolioSymbols)
+
+	c.JSON(http.StatusOK, gin.H{
+		"undervalued":  undervalued,
+		"count":        len(undervalued),
+		"market":       market,
+		"generated_at": time.Now().Format(time.RFC3339),
+	})
 }

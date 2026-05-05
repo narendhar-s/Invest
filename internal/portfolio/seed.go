@@ -31,6 +31,13 @@ var DefaultHoldings = []storage.PortfolioHolding{
 	{Symbol: "ZYDUSLIFE", YFSymbol: "ZYDUSLIFE.NS", DisplayName: "Zydus Lifesciences", Market: "NSE", Sector: "Healthcare", Currency: "INR", Quantity: 18, AvgBuyPrice: 900.01},
 	{Symbol: "ICICI_NIFTY_NEXT50", YFSymbol: "ICICINXT50.NS", DisplayName: "ICICI Pru Nifty Next 50 ETF", Market: "NSE", Sector: "Index Fund", Currency: "INR", Quantity: 1904.636, AvgBuyPrice: 63.53},
 
+	// ── Index Funds & ETFs (NSE) ─────────────────────────────────────────────
+	// ICICI Nifty Next 50 ETF — already above as ICICI_NIFTY_NEXT50
+
+	// Parag Parikh Flexi Cap Fund — Direct Plan (NAV-based mutual fund, no live price feed)
+	// Tracked as PPFAS.BO on Yahoo Finance (BSE listed; may have limited data)
+	{Symbol: "PPFCF", YFSymbol: "0P0000XVDK.BO", DisplayName: "Parag Parikh Flexi Cap Fund (Direct)", Market: "NSE", Sector: "Flexi Cap Fund", Currency: "INR", Quantity: 100, AvgBuyPrice: 80.00, Notes: "Mutual Fund — NAV updates daily. Long-term 5-10yr horizon. Diversified equity + foreign equity (Google, Microsoft, Amazon). Review quarterly."},
+
 	// ── US ──────────────────────────────────────────────────────────────────
 	{Symbol: "QQQ", YFSymbol: "QQQ", DisplayName: "Invesco QQQ Trust (NASDAQ ETF)", Market: "US", Sector: "Tech ETF", Currency: "USD", Quantity: 0.794268499, AvgBuyPrice: 615.47},
 	{Symbol: "NOVO_NORDISK", YFSymbol: "NVO", DisplayName: "Novo Nordisk A/S", Market: "US", Sector: "Healthcare", Currency: "USD", Quantity: 5.450616849, AvgBuyPrice: 44.26},

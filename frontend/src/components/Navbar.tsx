@@ -4,7 +4,9 @@ const links = [
   { to: '/', label: 'Dashboard' },
   { to: '/india', label: 'India (NSE)' },
   { to: '/us', label: 'US Market' },
+  { to: '/longterm-sip', label: '🇺🇸 3-Yr SIP' },
   { to: '/portfolio', label: 'Portfolio' },
+  { to: '/backtest', label: '📊 Backtest' },
 ]
 
 export default function Navbar() {

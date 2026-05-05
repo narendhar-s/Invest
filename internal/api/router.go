@@ -52,6 +52,9 @@ func NewRouter(repo *storage.Repository, engine *strategy.Engine, cfg *config.Co
 		v1.GET("/signals/investment", h.InvestmentSignals)
 		v1.GET("/signals/index", h.IndexSignals)
 		v1.GET("/signals/scalping", h.ScalpingSignals)
+		v1.GET("/signals/undervalued", h.UndervaluedStocks)
+		v1.GET("/signals/btst", h.BTSTSignals)
+		v1.GET("/signals/longterm-us", h.LongTermUSPicks)
 
 		// Trades
 		v1.GET("/trades", h.ListTrades)
@@ -66,6 +69,7 @@ func NewRouter(repo *storage.Repository, engine *strategy.Engine, cfg *config.Co
 
 		// Backtest results
 		v1.GET("/backtest/results", h.StrategyResults)
+		v1.GET("/backtest/scalping", h.ScalpingBacktest)
 	}
 
 	// ── Static frontend (for production) ─────────────────────────────────

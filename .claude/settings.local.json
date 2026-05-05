@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(ls \"C:\\\\msys64\\\\\" | Select-Object Name; ls \"C:\\\\msys64\\\\usr\\\\bin\\\\go.exe\" -ErrorAction SilentlyContinue; ls \"C:\\\\msys64\\\\mingw64\\\\bin\\\\go.exe\" -ErrorAction SilentlyContinue; ls \"C:\\\\msys64\\\\usr\\\\local\\\\go\\\\\" -ErrorAction SilentlyContinue | Select-Object -First 3; Get-ChildItem \"$env:USERPROFILE\" -ErrorAction SilentlyContinue | Select-Object Name | Select-Object -First 20)",
+      "PowerShell(Get-ChildItem \"C:\\\\msys64\" -ErrorAction SilentlyContinue | Format-Table Name; Get-ChildItem \"$env:USERPROFILE\" -ErrorAction SilentlyContinue | Format-Table Name | Select-Object -First 20; $env:GOROOT; $env:GOPATH)",
+      "PowerShell($items = @\\(\\); try { $items += Get-ChildItem \"C:\\\\Users\\\\NAREN\\\\AppData\\\\Local\\\\Programs\\\\\" -EA Stop | Select-Object -Exp Name } catch {}; try { $items += Get-ChildItem \"C:\\\\Users\\\\NAREN\\\\scoop\\\\shims\\\\\" -EA Stop -Filter \"go.exe\" | Select-Object -Exp FullName } catch {}; try { $items += Get-ChildItem \"C:\\\\Users\\\\NAREN\\\\.cargo\\\\\" -EA Stop | Select-Object -Exp Name } catch {}; $items; Get-ChildItem \"C:\\\\Users\\\\NAREN\\\\AppData\\\\Local\\\\\" -EA SilentlyContinue | Select-Object Name | Select-Object -First 20)",
+      "PowerShell(winget --version 2>&1)",
+      "PowerShell(Get-Command scoop -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command choco -ErrorAction SilentlyContinue)",
+      "PowerShell(winget install GoLang.Go --silent --accept-package-agreements --accept-source-agreements 2>&1)",
+      "PowerShell(winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); go version 2>&1; node --version 2>&1; psql --version 2>&1)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); node --version 2>&1; npm --version 2>&1)",
+      "PowerShell(winget list --name \"node\" 2>&1)",
+      "PowerShell(winget list --name \"golang\" 2>&1)",
+      "PowerShell($goFile = \"C:\\\\Users\\\\NAREN\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Code-Invest-AI-Invest\\\\217c89b3-345f-415b-b56c-1b426254fa22\\\\tasks\\\\bff4i3k86.output\"; \\(Get-Content $goFile -Raw\\).Length; \\(Get-Content $goFile -Raw\\) | Select-String \"Successfully installed|failed|error\" -CaseSensitive:$false | Select-Object -Last 3)",
+      "PowerShell(& \"C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe\" -l -c \"pacman -S --noconfirm mingw-w64-x86_64-go 2>&1 | tail -20\" 2>&1)",
+      "PowerShell(& \"C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe\" -l -c \"pacman -S --noconfirm mingw-w64-x86_64-nodejs 2>&1 | tail -15\" 2>&1)",
+      "PowerShell(& \"C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe\" -l -c \"pacman -S --noconfirm mingw-w64-x86_64-postgresql 2>&1 | tail -10\" 2>&1)",
+      "PowerShell(& \"C:\\\\msys64\\\\mingw64\\\\bin\\\\node.exe\" --version 2>&1)",
+      "PowerShell(& \"C:\\\\msys64\\\\mingw64\\\\bin\\\\npm.cmd\" --version 2>&1)",
+      "PowerShell(& \"C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe\" -l -c \"which go; go version; which node; node --version; which psql; psql --version\" 2>&1)",
+      "PowerShell(& \"C:\\\\msys64\\\\mingw64.exe\" -defterm -no-start -c \"which go; go version; which node; node --version\" 2>&1)",
+      "PowerShell(Get-ChildItem \"C:\\\\msys64\\\\mingw64\\\\bin\\\\\" | Where-Object {$_.Name -match \"^go|^node|^psql|^npm\"} | Select-Object Name | Sort-Object Name)",
+      "PowerShell(& \"C:\\\\msys64\\\\usr\\\\bin\\\\bash.exe\" -l -c \"rm /var/lib/pacman/db.lck; pacman -S --noconfirm mingw-w64-x86_64-nodejs 2>&1 | tail -10\" 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\msys64\\\\mingw64\\\\bin;\" + $env:PATH; $env:GOROOT = \"C:\\\\msys64\\\\mingw64\\\\lib\\\\go\"; $env:GOPATH = \"$env:USERPROFILE\\\\go\"; cd \"d:\\\\Code\\\\Invest AI\\\\Invest\"; C:\\\\msys64\\\\mingw64\\\\bin\\\\go.exe version)",
+      "PowerShell($env:PATH = \"C:\\\\msys64\\\\mingw64\\\\bin;C:\\\\Program Files\\\\Go\\\\bin;\" + $env:PATH; $env:GOROOT = \"\"; $env:GOPATH = \"$env:USERPROFILE\\\\go\"; Set-Location \"d:\\\\Code\\\\Invest AI\\\\Invest\"; go.exe build ./... 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\msys64\\\\mingw64\\\\bin;\" + $env:PATH; $env:GOROOT = \"C:\\\\msys64\\\\mingw64\\\\lib\\\\go\"; $env:GOPATH = \"$env:USERPROFILE\\\\go\"; Set-Location \"d:\\\\Code\\\\Invest AI\\\\Invest\"; C:\\\\msys64\\\\mingw64\\\\bin\\\\go.exe build ./... 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\msys64\\\\mingw64\\\\bin;\" + $env:PATH; $env:GOROOT = \"C:\\\\msys64\\\\mingw64\\\\lib\\\\go\"; $env:GOPATH = \"$env:USERPROFILE\\\\go\"; Set-Location \"d:\\\\Code\\\\Invest AI\\\\Invest\"; New-Item -ItemType Directory -Path \"bin\" -Force | Out-Null; C:\\\\msys64\\\\mingw64\\\\bin\\\\go.exe build -o \"bin\\\\stockwise.exe\" .\\\\cmd\\\\main.go 2>&1)",
+      "PowerShell(if \\(Test-Path \"d:\\\\Code\\\\Invest AI\\\\Invest\\\\bin\\\\stockwise.exe\"\\) { Write-Host \"Binary exists: $\\(Get-Item 'd:\\\\Code\\\\Invest AI\\\\Invest\\\\bin\\\\stockwise.exe' | Select-Object -ExpandProperty Length\\) bytes\" } else { Write-Host \"Binary NOT FOUND\" })",
+      "PowerShell(& \"d:\\\\Code\\\\Invest AI\\\\Invest\\\\start.ps1\")",
+      "PowerShell(Get-Process -Name \"stockwise\" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath \"d:\\\\Code\\\\Invest AI\\\\Invest\\\\bin\\\\stockwise.exe\" -WorkingDirectory \"d:\\\\Code\\\\Invest AI\\\\Invest\" -WindowStyle Normal; Start-Sleep -Seconds 3; try { $r = Invoke-WebRequest -Uri \"http://localhost:8080/api/v1/signals/longterm-us\" -TimeoutSec 10 -UseBasicParsing; \"Status: $\\($r.StatusCode\\)\"; \\($r.Content | ConvertFrom-Json\\).total_picks } catch { \"Error: $_\" })",
+      "PowerShell($env:PATH = \"C:\\\\msys64\\\\mingw64\\\\bin;\" + $env:PATH; Start-Process -FilePath \"C:\\\\msys64\\\\mingw64\\\\bin\\\\node.exe\" -ArgumentList \"C:\\\\msys64\\\\mingw64\\\\lib\\\\node_modules\\\\npm\\\\bin\\\\npm-cli.js run dev\" -WorkingDirectory \"d:\\\\Code\\\\Invest AI\\\\Invest\\\\frontend\" -WindowStyle Minimized; Start-Sleep -Seconds 6; try { $r = Invoke-WebRequest -Uri \"http://localhost:5173\" -TimeoutSec 8 -UseBasicParsing; \"Frontend HTTP $\\($r.StatusCode\\)\" } catch { \"Frontend: $_\" })"
+    ]
+  }
+}
