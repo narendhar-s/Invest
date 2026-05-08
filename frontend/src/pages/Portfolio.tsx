@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getPortfolio, buyMore, sellPartial, getUndervaluedStocks, type HoldingMetrics, type PortfolioData, type SectorAlloc, type UndervaluedStock } from '../api/client'
+import { getPortfolio, buyMore, sellPartial, getUndervaluedStocks, unlockPortfolio, setPortfolioToken, getPortfolioToken, type HoldingMetrics, type PortfolioData, type SectorAlloc, type UndervaluedStock } from '../api/client'
 import LoadingSpinner from '../components/LoadingSpinner'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -609,17 +609,55 @@ type SortKey = 'pnl_pct' | 'invested_value' | 'portfolio_weight' | 'symbol' | 'z
 export default function Portfolio() {
   const navigate = useNavigate()
   const [data, setData] = useState<PortfolioData | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<ViewTab>('all')
   const [sortKey, setSortKey] = useState<SortKey>('portfolio_weight')
   const [sortAsc, setSortAsc] = useState(false)
 
-  useEffect(() => {
+  // ── Auth state ────────────────────────────────────────────────────────────
+  const [locked, setLocked] = useState(!getPortfolioToken())
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+
+  const fetchPortfolio = () => {
+    setLoading(true)
     getPortfolio()
       .then(setData)
-      .catch(console.error)
+      .catch((err) => {
+        if (err?.response?.status === 401) {
+          setPortfolioToken(null)
+          setLocked(true)
+        } else {
+          console.error(err)
+        }
+      })
       .finally(() => setLoading(false))
+  }
+
+  // On mount: if already unlocked (returning to the page), fetch immediately
+  useEffect(() => {
+    if (!locked) fetchPortfolio()
   }, [])
+
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAuthError('')
+    setAuthLoading(true)
+    try {
+      const token = await unlockPortfolio(password)
+      setPortfolioToken(token)
+      // Fetch data while still showing the lock screen, then flip in one render
+      const portfolioData = await getPortfolio()
+      setData(portfolioData)
+      setPassword('')
+      setLocked(false)
+    } catch (err: any) {
+      setAuthError(err?.response?.data?.error ?? 'Incorrect password')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
 
   const holdings = useMemo(() => {
     if (!data) return []
@@ -638,6 +676,46 @@ export default function Portfolio() {
     })
     return list
   }, [data, tab, sortKey, sortAsc])
+
+  if (locked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-dark-900">
+        <div className="w-full max-w-sm bg-dark-800 border border-slate-700/60 rounded-2xl p-8 shadow-2xl">
+          <div className="flex flex-col items-center gap-3 mb-8">
+            <div className="w-14 h-14 rounded-full bg-brand-600/20 border border-brand-600/40 flex items-center justify-center">
+              <svg className="w-7 h-7 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+              </svg>
+            </div>
+            <div className="text-center">
+              <h2 className="text-white font-semibold text-lg">Portfolio is locked</h2>
+              <p className="text-slate-400 text-sm mt-1">Enter your password to view your holdings</p>
+            </div>
+          </div>
+          <form onSubmit={handleUnlock} className="flex flex-col gap-4">
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="Password"
+              autoFocus
+              className="w-full px-4 py-3 rounded-lg bg-dark-700 border border-slate-600/60 text-white placeholder-slate-500 focus:outline-none focus:border-brand-500/60 focus:ring-1 focus:ring-brand-500/30 text-sm"
+            />
+            {authError && (
+              <p className="text-red-400 text-xs text-center">{authError}</p>
+            )}
+            <button
+              type="submit"
+              disabled={authLoading || !password}
+              className="w-full py-3 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium text-sm transition-colors"
+            >
+              {authLoading ? 'Loading…' : 'Unlock Portfolio'}
+            </button>
+          </form>
+        </div>
+      </div>
+    )
+  }
 
   if (loading) return <LoadingSpinner size="lg" text="Computing portfolio analysis..." />
   if (!data) return <div className="text-slate-400 text-center py-12">Failed to load portfolio</div>

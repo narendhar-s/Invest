@@ -17,6 +17,26 @@ const BASE_URL = '/api/v1'
 
 const client = axios.create({ baseURL: BASE_URL, timeout: 30000 })
 
+// ─── Portfolio auth token (in-memory only, never persisted) ──────────────────
+
+let _portfolioToken: string | null = null
+
+export const setPortfolioToken = (token: string | null) => { _portfolioToken = token }
+export const getPortfolioToken = () => _portfolioToken
+
+client.interceptors.request.use(config => {
+  if (_portfolioToken && config.url?.startsWith('/portfolio')) {
+    config.headers = config.headers ?? {}
+    config.headers['Authorization'] = `Bearer ${_portfolioToken}`
+  }
+  return config
+})
+
+export const unlockPortfolio = async (password: string): Promise<string> => {
+  const { data } = await client.post('/auth/unlock', { password })
+  return data.token
+}
+
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 export interface DashboardData {

@@ -59,13 +59,19 @@ func NewRouter(repo *storage.Repository, engine *strategy.Engine, cfg *config.Co
 		// Trades
 		v1.GET("/trades", h.ListTrades)
 
-		// Portfolio
-		v1.GET("/portfolio", h.GetPortfolio)
-		v1.POST("/portfolio/holding", h.UpsertPortfolioHolding)
-		v1.DELETE("/portfolio/holding/:symbol", h.DeletePortfolioHolding)
-		v1.POST("/portfolio/holding/:symbol/buy", h.BuyMore)
-		v1.POST("/portfolio/holding/:symbol/sell", h.SellPartial)
-		v1.GET("/portfolio/holding/:symbol", h.PortfolioStockDetail)
+		// Auth
+		v1.POST("/auth/unlock", h.UnlockPortfolio)
+
+		// Portfolio (password-protected)
+		portfolio := v1.Group("/portfolio", h.PortfolioAuthMiddleware())
+		{
+			portfolio.GET("", h.GetPortfolio)
+			portfolio.POST("/holding", h.UpsertPortfolioHolding)
+			portfolio.DELETE("/holding/:symbol", h.DeletePortfolioHolding)
+			portfolio.POST("/holding/:symbol/buy", h.BuyMore)
+			portfolio.POST("/holding/:symbol/sell", h.SellPartial)
+			portfolio.GET("/holding/:symbol", h.PortfolioStockDetail)
+		}
 
 		// Backtest results
 		v1.GET("/backtest/results", h.StrategyResults)

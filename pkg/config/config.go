@@ -10,11 +10,17 @@ import (
 type Config struct {
 	Server         ServerConfig         `mapstructure:"server"`
 	Database       DatabaseConfig       `mapstructure:"database"`
+	Auth           AuthConfig           `mapstructure:"auth"`
 	Data           DataConfig           `mapstructure:"data"`
 	Markets        MarketsConfig        `mapstructure:"markets"`
 	Indicators     IndicatorsConfig     `mapstructure:"indicators"`
 	Recommendation RecommendationConfig `mapstructure:"recommendation"`
 	Backtest       BacktestConfig       `mapstructure:"backtest"`
+}
+
+type AuthConfig struct {
+	PortfolioPassword string `mapstructure:"portfolio_password"`
+	JWTSecret         string `mapstructure:"jwt_secret"`
 }
 
 type ServerConfig struct {
@@ -102,6 +108,10 @@ func Load(cfgFile string) (*Config, error) {
 	v.BindEnv("database.user", "DATABASE_USER")
 	v.BindEnv("database.password", "DATABASE_PASSWORD")
 	v.BindEnv("database.name", "DATABASE_NAME")
+
+	// Auth — loaded from env only (never committed to repo)
+	v.BindEnv("auth.portfolio_password", "PORTFOLIO_PASSWORD")
+	v.BindEnv("auth.jwt_secret", "JWT_SECRET")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
