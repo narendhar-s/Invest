@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getDashboard, getBTSTSignals, type DashboardData, type BTSTSignal } from '../api/client'
+import { getDashboard, getBTSTSignals, addStock, type DashboardData, type BTSTSignal, type AddStockResult, type ZerodhaQuote } from '../api/client'
 import StockCard from '../components/StockCard'
 import LoadingSpinner from '../components/LoadingSpinner'
 
@@ -97,6 +97,195 @@ function BTSTPanel() {
   )
 }
 
+// ── Custom-Stock Storage Key ──────────────────────────────────────────────────
+const CUSTOM_STOCKS_KEY = 'stockwise_custom_stocks'
+
+function loadCustomStocks(): AddStockResult[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_STOCKS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveCustomStocks(items: AddStockResult[]) {
+  try { localStorage.setItem(CUSTOM_STOCKS_KEY, JSON.stringify(items)) } catch {}
+}
+
+// ── AddStockPanel ────────────────────────────────────────────────────────────
+function AddStockPanel({
+  customStocks,
+  onAdd,
+  onRemove,
+}: {
+  customStocks: AddStockResult[]
+  onAdd: (result: AddStockResult) => void
+  onRemove: (symbol: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [symbol, setSymbol] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const navigate = useNavigate()
+
+  const handleAdd = async () => {
+    const sym = symbol.trim().toUpperCase()
+    if (!sym) return
+    // Prevent duplicates
+    if (customStocks.some(c => c.stock.symbol === sym)) {
+      setError(`${sym} is already added.`)
+      return
+    }
+    setLoading(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const result = await addStock(sym)
+      onAdd(result)
+      setSuccess(`✓ ${result.stock.name || sym} added with analysis!`)
+      setSymbol('')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (e: any) {
+      const msg = e?.response?.data?.details || e?.response?.data?.error || e?.message || 'Failed to fetch stock'
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="mb-6 bg-dark-700 border border-slate-800/60 rounded-xl overflow-hidden">
+      {/* Header row — always visible */}
+      <button
+        onClick={() => { setOpen(o => !o); setTimeout(() => inputRef.current?.focus(), 100) }}
+        className="w-full flex items-center justify-between px-5 py-3 hover:bg-dark-600/50 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
+          <span className="text-brand-400 text-lg">＋</span>
+          Add Any Stock for Analysis
+          {customStocks.length > 0 && (
+            <span className="ml-2 bg-brand-600/30 text-brand-400 text-xs px-2 py-0.5 rounded-full border border-brand-600/40">
+              {customStocks.length} added
+            </span>
+          )}
+        </div>
+        <span className={`text-slate-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span>
+      </button>
+
+      {/* Collapsible body */}
+      {open && (
+        <div className="px-5 pb-5 border-t border-slate-800/40">
+          <p className="text-xs text-slate-500 mt-3 mb-3">
+            Enter any Yahoo Finance symbol — e.g. <code className="bg-dark-800 px-1 rounded text-brand-400">TSLA</code>, <code className="bg-dark-800 px-1 rounded text-brand-400">HDFCBANK.NS</code>, <code className="bg-dark-800 px-1 rounded text-brand-400">NVDA</code>
+          </p>
+
+          {/* Input row */}
+          <div className="flex gap-2 mb-3">
+            <input
+              ref={inputRef}
+              type="text"
+              value={symbol}
+              onChange={e => { setSymbol(e.target.value.toUpperCase()); setError(null) }}
+              onKeyDown={e => e.key === 'Enter' && !loading && handleAdd()}
+              placeholder="e.g. TSLA or WIPRO.NS"
+              className="flex-1 bg-dark-800 border border-slate-700 focus:border-brand-500 rounded-lg px-4 py-2 text-sm text-white placeholder-slate-600 outline-none transition-colors font-mono"
+              disabled={loading}
+            />
+            <button
+              onClick={handleAdd}
+              disabled={loading || !symbol.trim()}
+              className="px-5 py-2 rounded-lg text-sm font-semibold bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors flex items-center gap-2"
+            >
+              {loading ? <><span className="animate-spin">⟳</span> Analysing…</> : 'Analyse'}
+            </button>
+          </div>
+
+          {/* Error / success feedback */}
+          {error   && <div className="text-xs text-red-400 mb-3 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</div>}
+          {success && <div className="text-xs text-emerald-400 mb-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">{success}</div>}
+
+          {/* Already-added chips */}
+          {customStocks.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {customStocks.map(c => (
+                <div
+                  key={c.stock.symbol}
+                  className="flex items-center gap-1.5 bg-dark-800 border border-slate-700 rounded-lg px-3 py-1 text-xs"
+                >
+                  <button
+                    onClick={() => navigate(`/stock/${c.stock.symbol}`)}
+                    className="text-brand-400 hover:text-brand-300 font-mono font-semibold"
+                  >
+                    {c.stock.symbol}
+                  </button>
+                  <span className="text-slate-600 truncate max-w-[80px]">{c.stock.name}</span>
+                  <button
+                    onClick={() => onRemove(c.stock.symbol)}
+                    className="text-slate-600 hover:text-red-400 transition-colors ml-1"
+                    title="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── CustomStockCard ──────────────────────────────────────────────────────────
+// Shows the best-confidence recommendation for a custom stock with all metrics.
+function CustomStockCard({ result }: { result: AddStockResult }) {
+  const navigate = useNavigate()
+  const recs = result.recommendations
+  // Pick the highest-confidence recommendation
+  const bestRec = Object.values(recs).reduce<any>((best, r: any) =>
+    !best || (r && r.confidence > best.confidence) ? r : best, null)
+
+  if (!bestRec) {
+    return (
+      <div className="bg-dark-700 border border-slate-800/60 rounded-xl p-4 flex items-center justify-center text-xs text-slate-500">
+        No recommendations yet — check back after data refreshes.
+      </div>
+    )
+  }
+
+  const horizonBadges: Record<string, string> = {
+    intraday: '⚡',
+    swing:    '🔄',
+    longterm: '🏦',
+  }
+
+  return (
+    <div
+      className="relative cursor-pointer"
+      onClick={() => navigate(`/stock/${result.stock.symbol}`)}
+    >
+      {/* Custom badge */}
+      <div className="absolute -top-2 -right-2 z-10 bg-brand-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow">
+        Custom
+      </div>
+
+      {/* All horizon chips */}
+      <div className="absolute top-2 left-3 flex gap-1 z-10">
+        {Object.keys(recs).map(h => (
+          <span key={h} className="text-[10px] bg-dark-800/80 border border-slate-700 px-1.5 py-0.5 rounded text-slate-400">
+            {horizonBadges[h] ?? h} {h}
+          </span>
+        ))}
+      </div>
+
+      <StockCard rec={{ ...bestRec, stock: result.stock }} />
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const [data, setData] = useState<DashboardData | null>(null)
@@ -104,6 +293,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [market, setMarket] = useState<MarketTab>('india')
   const [horizon, setHorizon] = useState<HorizonTab>('swing')
+  const [customStocks, setCustomStocks] = useState<AddStockResult[]>(loadCustomStocks)
 
   useEffect(() => {
     getDashboard()
@@ -111,6 +301,22 @@ export default function Dashboard() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  const handleAddCustomStock = (result: AddStockResult) => {
+    setCustomStocks(prev => {
+      const updated = [...prev.filter(c => c.stock.symbol !== result.stock.symbol), result]
+      saveCustomStocks(updated)
+      return updated
+    })
+  }
+
+  const handleRemoveCustomStock = (symbol: string) => {
+    setCustomStocks(prev => {
+      const updated = prev.filter(c => c.stock.symbol !== symbol)
+      saveCustomStocks(updated)
+      return updated
+    })
+  }
 
   if (loading) return <LoadingSpinner size="lg" text="Loading market data..." />
   if (error) return (
@@ -163,6 +369,13 @@ export default function Dashboard() {
           <span className="text-slate-600">→</span>
         </button>
       </div>
+
+      {/* ── Add Stock Panel ──────────────────────────────────────────────── */}
+      <AddStockPanel
+        customStocks={customStocks}
+        onAdd={handleAddCustomStock}
+        onRemove={handleRemoveCustomStock}
+      />
 
       {/* Summary Tiles */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
@@ -240,6 +453,24 @@ export default function Dashboard() {
             {recs.map((rec: any) => <StockCard key={rec.id} rec={rec} />)}
           </div>
         )
+      )}
+
+      {/* ── Custom Added Stocks ──────────────────────────────────────────── */}
+      {customStocks.length > 0 && (
+        <div className="mt-10">
+          <div className="flex items-center gap-3 mb-4">
+            <h2 className="text-base font-semibold text-white">My Custom Stocks</h2>
+            <span className="text-xs text-slate-500 bg-dark-700 border border-slate-800/60 px-2 py-0.5 rounded-full">
+              {customStocks.length} stock{customStocks.length !== 1 ? 's' : ''} · full analysis
+            </span>
+            <span className="text-xs text-slate-600">Click any card to view full detail →</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+            {customStocks.map(result => (
+              <CustomStockCard key={result.stock.symbol} result={result} />
+            ))}
+          </div>
+        </div>
       )}
     </div>
   )

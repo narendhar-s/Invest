@@ -1,13 +1,19 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"stockwise/internal/analysis/alpha"
+	"stockwise/internal/data"
+	"stockwise/internal/recommendation"
 	"stockwise/internal/storage"
 	"stockwise/internal/strategy"
 	"stockwise/pkg/config"
@@ -131,11 +137,105 @@ func (h *Handler) resolveBestSymbol(preferred string, years int) string {
 type Handler struct {
 	repo           *storage.Repository
 	strategyEngine *strategy.Engine
+	fetcher        *data.Fetcher
+	recEngine      *recommendation.Engine
 	cfg            *config.Config
+	kite           *data.KiteClient
+	kiteStream     *data.KiteStream
+	liveEngine     *strategy.LiveEngine
+	dataSource     data.MarketDataSource
 }
 
-func NewHandler(repo *storage.Repository, engine *strategy.Engine, cfg *config.Config) *Handler {
-	return &Handler{repo: repo, strategyEngine: engine, cfg: cfg}
+func NewHandler(repo *storage.Repository, engine *strategy.Engine, fetcher *data.Fetcher, recEngine *recommendation.Engine, kite *data.KiteClient, kiteStream *data.KiteStream, liveEngine *strategy.LiveEngine, dataSource data.MarketDataSource, cfg *config.Config) *Handler {
+	return &Handler{repo: repo, strategyEngine: engine, fetcher: fetcher, recEngine: recEngine, kite: kite, kiteStream: kiteStream, liveEngine: liveEngine, dataSource: dataSource, cfg: cfg}
+}
+
+// inferMarket auto-detects the market from the symbol format.
+func inferMarket(symbol string) string {
+	if strings.HasPrefix(symbol, "^") {
+		return "INDEX"
+	}
+	upper := strings.ToUpper(symbol)
+	if strings.HasSuffix(upper, ".NS") || strings.HasSuffix(upper, ".BO") {
+		return "NSE"
+	}
+	return "US"
+}
+
+// ─── Add Stock ────────────────────────────────────────────────────────────────
+
+// AddStock fetches, analyses, and returns recommendations for any symbol on demand.
+func (h *Handler) AddStock(c *gin.Context) {
+	var req struct {
+		Symbol string `json:"symbol" binding:"required"`
+		Market string `json:"market"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol cannot be empty"})
+		return
+	}
+
+	market := req.Market
+	if market == "" {
+		market = inferMarket(symbol)
+	}
+
+	// Step 1: Fetch price data + fundamentals from Yahoo Finance
+	if err := h.fetcher.FetchOneSymbol(symbol); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   fmt.Sprintf("could not fetch data for %s", symbol),
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Step 2: Retrieve the stock record (created/updated by fetch)
+	stock, err := h.repo.GetStockBySymbol(symbol)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "stock not found after fetch"})
+		return
+	}
+
+	// Patch market if still UNKNOWN (custom symbol not in config)
+	if stock.Market == "UNKNOWN" || stock.Market == "" {
+		stock.Market = market
+		_ = h.repo.UpsertStock(stock)
+	}
+
+	// Step 3: Run technical analysis + S/R levels
+	_ = h.strategyEngine.RunForStock(*stock)
+
+	// Step 4: Generate recommendations for all horizons
+	_ = h.recEngine.GenerateForStock(*stock)
+
+	// Step 5: Return latest recommendation per horizon
+	allRecs, _ := h.repo.GetStockRecommendations(stock.ID, 20)
+	recsByHorizon := map[string]*storage.Recommendation{}
+	for i := range allRecs {
+		r := &allRecs[i]
+		r.Stock = stock // attach stock info
+		if _, exists := recsByHorizon[r.Horizon]; !exists {
+			recsByHorizon[r.Horizon] = r
+		}
+	}
+
+	// Latest indicator snapshot
+	latestInd, _ := h.repo.GetLatestTechnicalIndicator(stock.ID)
+	fund, _ := h.repo.GetFundamental(stock.ID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"stock":           stock,
+		"recommendations": recsByHorizon,
+		"latest_indicator": latestInd,
+		"fundamental":     fund,
+		"message":         fmt.Sprintf("Stock %s fetched and analysed successfully", symbol),
+	})
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────
@@ -581,4 +681,128 @@ func (h *Handler) UndervaluedStocks(c *gin.Context) {
 		"market":       market,
 		"generated_at": time.Now().Format(time.RFC3339),
 	})
+}
+
+// ─── Zerodha / Kite Handlers ──────────────────────────────────────────────────
+
+// ZerodhaLoginURL returns the Kite Connect OAuth URL.
+func (h *Handler) ZerodhaLoginURL(c *gin.Context) {
+	if h.kite == nil || h.cfg.Zerodha.APIKey == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":      "Zerodha not configured",
+			"hint":       "Set ZERODHA_API_KEY and ZERODHA_API_SECRET in your .env file",
+			"configured": false,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"login_url":  h.kite.LoginURL(h.cfg.Zerodha.RedirectURL),
+		"configured": true,
+	})
+}
+
+// ZerodhaCallback handles the OAuth redirect from Zerodha after user login.
+func (h *Handler) ZerodhaCallback(c *gin.Context) {
+	reqToken := c.Query("request_token")
+	status   := c.Query("status")
+
+	frontendBase := "http://localhost:5173"
+
+	if status != "success" || reqToken == "" {
+		c.Redirect(http.StatusFound, frontendBase+"?zerodha=error&msg=login_cancelled")
+		return
+	}
+
+	accessToken, err := h.kite.ExchangeToken(reqToken)
+	if err != nil {
+		c.Redirect(http.StatusFound,
+			frontendBase+"?zerodha=error&msg="+url.QueryEscape(err.Error()))
+		return
+	}
+
+	h.kite.SetAccessToken(accessToken)
+	_ = h.repo.SetSetting("zerodha_access_token", accessToken)
+	_ = h.repo.SetSetting("zerodha_token_date", time.Now().Format("2006-01-02"))
+
+	// (Re)start the live stream
+	if h.kiteStream != nil {
+		h.kiteStream.Stop()
+		h.kiteStream.Start()
+	}
+
+	c.Redirect(http.StatusFound, frontendBase+"?zerodha=connected")
+}
+
+// ZerodhaStatus returns Zerodha connection state.
+func (h *Handler) ZerodhaStatus(c *gin.Context) {
+	configured := h.kite != nil && h.cfg.Zerodha.APIKey != ""
+	connected  := configured && h.kite.IsConnected()
+	streaming  := h.kiteStream != nil && h.kiteStream.IsRunning()
+	tokenDate, _ := h.repo.GetSetting("zerodha_token_date")
+
+	c.JSON(http.StatusOK, gin.H{
+		"configured": configured,
+		"connected":  connected,
+		"streaming":  streaming,
+		"token_date": tokenDate,
+	})
+}
+
+// ZerodhaLogout clears the stored access token and stops the stream.
+func (h *Handler) ZerodhaLogout(c *gin.Context) {
+	if h.kite != nil {
+		h.kite.SetAccessToken("")
+	}
+	if h.kiteStream != nil {
+		h.kiteStream.Stop()
+	}
+	_ = h.repo.SetSetting("zerodha_access_token", "")
+	c.JSON(http.StatusOK, gin.H{"message": "Disconnected from Zerodha"})
+}
+
+// ZerodhaQuotes returns a snapshot of all current live NSE quotes.
+func (h *Handler) ZerodhaQuotes(c *gin.Context) {
+	if h.kiteStream == nil || !h.kite.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Zerodha not connected"})
+		return
+	}
+	quotes := h.kiteStream.GetAllQuotes()
+	c.JSON(http.StatusOK, gin.H{"quotes": quotes, "count": len(quotes), "source": "zerodha_live"})
+}
+
+// ZerodhaStream is an SSE endpoint that pushes live quote updates every ~3 s.
+func (h *Handler) ZerodhaStream(c *gin.Context) {
+	if h.kiteStream == nil || !h.kite.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Zerodha not connected"})
+		return
+	}
+
+	c.Header("Content-Type",      "text/event-stream")
+	c.Header("Cache-Control",     "no-cache")
+	c.Header("Connection",        "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	// Send the current snapshot immediately so the client has data right away
+	snap := h.kiteStream.GetAllQuotes()
+	if snapJSON, err := json.Marshal(snap); err == nil {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", snapJSON)
+		c.Writer.Flush()
+	}
+
+	ch := h.kiteStream.Subscribe()
+	defer h.kiteStream.Unsubscribe(ch)
+
+	clientGone := c.Request.Context().Done()
+	for {
+		select {
+		case <-clientGone:
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(c.Writer, "data: %s\n\n", msg)
+			c.Writer.Flush()
+		}
+	}
 }

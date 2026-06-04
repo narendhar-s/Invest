@@ -51,6 +51,8 @@ func migrate(db *gorm.DB) error {
 		&Trade{},
 		&StrategyResult{},
 		&PortfolioHolding{},
+		&AppSetting{},
+		&LiveCallRecord{},
 	)
 }
 

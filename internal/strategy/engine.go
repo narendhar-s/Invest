@@ -76,6 +76,11 @@ func (e *Engine) RunAll() error {
 	return nil
 }
 
+// RunForStock runs the full technical analysis pipeline for a single stock (public wrapper).
+func (e *Engine) RunForStock(stock storage.Stock) error {
+	return e.analyzeStock(stock)
+}
+
 func (e *Engine) analyzeStock(stock storage.Stock) error {
 	// Fetch price bars (last 250 trading days ≈ 1 year)
 	to := time.Now()

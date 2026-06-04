@@ -168,6 +168,34 @@ type Trade struct {
 	Stock *Stock `gorm:"foreignKey:StockID" json:"stock,omitempty"`
 }
 
+// LiveCallRecord persists a trade call emitted by the live engine so calls
+// survive restarts and can be listed by the day they were made.
+type LiveCallRecord struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// CalledAt is the moment the engine emitted the call (indexed for
+	// day-range queries). Stored separately from CreatedAt so it reflects
+	// the engine timestamp even if persistence is delayed.
+	CalledAt time.Time `gorm:"index" json:"called_at"`
+
+	Symbol     string  `gorm:"index" json:"symbol"`
+	Direction  string  `json:"direction"`
+	Strategy   string  `json:"strategy"`
+	Price      float64 `json:"price"`
+	Target     float64 `json:"target"`
+	StopLoss   float64 `json:"stop_loss"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason"`
+
+	Mode     string  `json:"mode"`
+	Status   string  `json:"status"`
+	OrderID  string  `json:"order_id,omitempty"`
+	Quantity int     `json:"quantity"`
+	PaperPnL float64 `json:"paper_pnl,omitempty"`
+	Error    string  `json:"error,omitempty"`
+}
+
 // PortfolioHolding stores a user's actual portfolio position.
 type PortfolioHolding struct {
 	ID          uint      `gorm:"primarykey" json:"id"`
@@ -206,4 +234,14 @@ type StrategyResult struct {
 	SharpeRatio   float64 `json:"sharpe_ratio"`
 	AvgWin        float64 `json:"avg_win"`
 	AvgLoss       float64 `json:"avg_loss"`
+}
+
+// AppSetting stores persistent key-value settings (e.g. Zerodha access token).
+type AppSetting struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	Key   string `gorm:"uniqueIndex;not null" json:"key"`
+	Value string `gorm:"type:text"           json:"value"`
 }

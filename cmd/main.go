@@ -86,8 +86,61 @@ func main() {
 	strategyEngine := strategy.NewEngine(cfg, repo)
 	recEngine := recommendation.NewEngine(cfg, repo)
 
+	// ── Zerodha Kite Connect ──────────────────────────────────────────────────
+	var kiteClient *data.KiteClient
+	var kiteStream *data.KiteStream
+	var kiteTicker *data.KiteTicker
+	var liveEngine *strategy.LiveEngine
+
+	if cfg.Zerodha.APIKey != "" {
+		kiteClient = data.NewKiteClient(cfg.Zerodha.APIKey, cfg.Zerodha.APISecret)
+
+		// Restore access token from DB (survives server restarts within same day)
+		if storedToken, err := repo.GetSetting("zerodha_access_token"); err == nil && storedToken != "" {
+			// Validate: token is fresh only if it was stored today
+			tokenDate, _ := repo.GetSetting("zerodha_token_date")
+			today := time.Now().Format("2006-01-02")
+			if tokenDate == today {
+				kiteClient.SetAccessToken(storedToken)
+				logger.Info("zerodha: restored access token from db")
+			} else {
+				logger.Info("zerodha: stored token is stale, skipping", zap.String("token_date", tokenDate))
+			}
+		}
+
+		// Build NSE symbol list for the stream
+		nseSymbols := cfg.Markets.NSE.Symbols // Yahoo-format: RELIANCE.NS etc.
+		kiteStream = data.NewKiteStream(kiteClient)
+		kiteStream.SetSymbols(nseSymbols)
+
+		// Live websocket ticker + strategy engine
+		kiteTicker = data.NewKiteTicker(kiteClient, cfg.Zerodha.APIKey)
+
+		if kiteClient.IsConnected() {
+			kiteStream.Start()
+			logger.Info("zerodha: live stream started with restored token")
+		} else {
+			logger.Info("zerodha: configured but not authenticated — visit /zerodha/login-url to connect")
+		}
+	} else {
+		logger.Info("zerodha: not configured (ZERODHA_API_KEY not set)")
+	}
+
+	// ── Data source (yfinance | zerodha) + live strategy engine ──────────────
+	dataSource := data.NewDataSource(cfg.Data.Source, data.NewYahooClient(), kiteClient)
+	logger.Info("market data source selected", zap.String("source", dataSource.Name()))
+	if kiteTicker != nil {
+		// Live trading uses Zerodha exclusively: seed strategy buffers from
+		// Kite historical only (no Yahoo fallback) so live candles and seed
+		// data come from the same source. When Kite is disconnected the engine
+		// simply skips seeding and builds buffers from live ticks.
+		liveSeed := data.NewZerodhaSource(kiteClient, data.NewYFinanceSource(data.NewYahooClient()))
+		liveEngine = strategy.NewLiveEngine(kiteClient, kiteTicker, liveSeed, cfg.Data.LiveDefaultQty)
+		liveEngine.SetRepository(repo)
+	}
+
 	// ── HTTP Server starts immediately ────────────────────────────────────
-	router := api.NewRouter(repo, strategyEngine, cfg)
+	router := api.NewRouter(repo, strategyEngine, fetcher, recEngine, kiteClient, kiteStream, liveEngine, dataSource, cfg)
 	serverAddr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         serverAddr,

@@ -16,6 +16,8 @@ data:
   history_days: 365
   intraday_interval: "5m"
   intraday_range: "5d"
+  source: "yfinance"     # "yfinance" (Yahoo) or "zerodha" (Kite historical; falls back to yfinance when disconnected)
+  live_default_qty: 1    # order/paper quantity per trade call in the live engine
 
 markets:
   nse:
@@ -103,3 +105,8 @@ backtest:
   default_capital: 100000
   commission_pct: 0.1
   slippage_pct: 0.05
+
+zerodha:
+  api_key: "rhwcpeoekvr0j875"      # override via env ZERODHA_API_KEY
+  api_secret: "pvcu5duid5ukd9yt3xhoa2uf5wkipvp8"   # override via env ZERODHA_API_SECRET
+  redirect_url: "http://localhost:8080/api/v1/zerodha/callback"

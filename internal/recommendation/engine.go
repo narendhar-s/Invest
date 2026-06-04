@@ -67,6 +67,28 @@ func (e *Engine) GenerateAll() error {
 	return nil
 }
 
+// GenerateForStock generates recommendations for a single stock across all applicable horizons.
+func (e *Engine) GenerateForStock(stock storage.Stock) error {
+	today := time.Now().Truncate(24 * time.Hour)
+	horizons := []string{"swing", "longterm"}
+	if stock.Market == "NSE" {
+		horizons = append([]string{"intraday"}, horizons...)
+	}
+	for _, horizon := range horizons {
+		rec, err := e.generateForHorizon(stock, today, horizon)
+		if err != nil {
+			continue
+		}
+		if err := e.repo.UpsertRecommendation(rec); err != nil {
+			logger.Warn("storing recommendation",
+				zap.String("symbol", stock.Symbol),
+				zap.String("horizon", horizon),
+				zap.Error(err))
+		}
+	}
+	return nil
+}
+
 func (e *Engine) generateForHorizon(stock storage.Stock, date time.Time, horizon string) (*storage.Recommendation, error) {
 	ind, err := e.repo.GetLatestTechnicalIndicator(stock.ID)
 	if err != nil {

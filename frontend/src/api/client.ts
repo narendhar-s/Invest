@@ -25,10 +25,14 @@ export const setPortfolioToken = (token: string | null) => { _portfolioToken = t
 export const getPortfolioToken = () => _portfolioToken
 
 client.interceptors.request.use(config => {
+  config.headers = config.headers ?? {}
   if (_portfolioToken && config.url?.startsWith('/portfolio')) {
-    config.headers = config.headers ?? {}
     config.headers['Authorization'] = `Bearer ${_portfolioToken}`
   }
+  // Force revalidation on every API call. Without this, a stale cached
+  // index.html (served when an endpoint briefly 404'd) can mask a working
+  // JSON endpoint, leaving dropdowns empty with no error.
+  config.headers['Cache-Control'] = 'no-cache'
   return config
 })
 
@@ -59,6 +63,19 @@ export const getDashboard = async (): Promise<DashboardData> => {
 
 export const getStocks = async (market?: string): Promise<{ stocks: Stock[]; total: number }> => {
   const { data } = await client.get('/stocks', { params: { market } })
+  return data
+}
+
+export interface AddStockResult {
+  stock: Stock
+  recommendations: Record<string, Recommendation>
+  latest_indicator: import('../types').TechnicalIndicator | null
+  fundamental: import('../types').Fundamental | null
+  message: string
+}
+
+export const addStock = async (symbol: string, market?: string): Promise<AddStockResult> => {
+  const { data } = await client.post('/stocks/add', { symbol, market })
   return data
 }
 
@@ -455,4 +472,428 @@ export const getLongTermUSPicks = async (): Promise<LongTermUSReport> => {
 export const runBacktest = async (symbol: string, strategy = 'RSI_MACD'): Promise<BacktestResult> => {
   const { data } = await client.get(`/stocks/${encodeURIComponent(symbol)}/backtest`, { params: { strategy } })
   return data
+}
+
+// ─── Zerodha ──────────────────────────────────────────────────────────────────
+
+export interface ZerodhaStatus {
+  configured: boolean
+  connected: boolean
+  streaming: boolean
+  token_date: string
+}
+
+export interface ZerodhaQuote {
+  symbol: string
+  last_price: number
+  open: number
+  high: number
+  low: number
+  close: number
+  change: number
+  change_pct: number
+  volume: number
+  timestamp: string
+}
+
+export const getZerodhaStatus = async (): Promise<ZerodhaStatus> => {
+  const { data } = await client.get('/zerodha/status')
+  return data
+}
+
+export const getZerodhaLoginUrl = async (): Promise<{ login_url: string; configured: boolean }> => {
+  const { data } = await client.get('/zerodha/login-url')
+  return data
+}
+
+export const zerodhaLogout = async (): Promise<void> => {
+  await client.post('/zerodha/logout')
+}
+
+export const getZerodhaQuotes = async (): Promise<{ quotes: Record<string, ZerodhaQuote>; count: number }> => {
+  const { data } = await client.get('/zerodha/quotes')
+  return data
+}
+
+// ─── Live Strategy Trading ─────────────────────────────────────────────────────
+
+export interface StrategyMeta {
+  key:          string
+  name:         string
+  description:  string
+  configurable?: boolean
+}
+
+// ─── Configurable strategies (strategy editor) ─────────────────────────────────
+
+export type StrategyConfig = Record<string, string | number | boolean>
+
+export interface StrategyConfigResponse {
+  key:      string
+  name:     string
+  config:   StrategyConfig
+  defaults: StrategyConfig
+}
+
+// ─── Strategy backtest ─────────────────────────────────────────────────────────
+
+export interface BacktestTrade {
+  entry_time:    number
+  exit_time:     number
+  direction:     string
+  option_type?:  string
+  option_action?: string
+  strike?:       number
+  entry:         number
+  exit:          number
+  exit_reason:   string
+  pnl_points:    number
+  win:           boolean
+  reason:        string
+}
+
+export interface BacktestSummary {
+  symbol:        string
+  interval:      string
+  strategy:      string
+  trades:        BacktestTrade[]
+  num_trades:    number
+  wins:          number
+  losses:        number
+  win_rate:      number
+  net_points:    number
+  gross_win:     number
+  gross_loss:    number
+  profit_factor: number
+  avg_points:    number
+}
+
+export interface BacktestRange {
+  from?: string // YYYY-MM-DD
+  to?: string   // YYYY-MM-DD
+  days?: number // lookback shortcut
+}
+
+export const runStrategyBacktest = async (
+  symbol: string,
+  strategy: string,
+  timeframe = '5m',
+  range: BacktestRange = {},
+): Promise<{ available: boolean; result?: BacktestSummary; error?: string }> => {
+  const params: Record<string, string | number> = { symbol, strategy, timeframe }
+  if (range.from) params.from = range.from
+  if (range.to) params.to = range.to
+  if (range.days) params.days = range.days
+  const { data } = await client.get('/live/backtest', { params })
+  return data
+}
+
+export const getStrategyConfig = async (key: string): Promise<StrategyConfigResponse> => {
+  const { data } = await client.get(`/live/strategies/${encodeURIComponent(key)}/config`)
+  return data
+}
+
+export const updateStrategyConfig = async (
+  key: string,
+  config: StrategyConfig,
+): Promise<{ key: string; config: StrategyConfig }> => {
+  const { data } = await client.put(`/live/strategies/${encodeURIComponent(key)}/config`, config)
+  return data
+}
+
+export interface ModeMeta {
+  key:  string
+  name: string
+}
+
+export interface LiveStrategiesResponse {
+  strategies:  StrategyMeta[]
+  modes:       ModeMeta[]
+  data_source: string
+}
+
+export interface LiveCall {
+  symbol:      string
+  direction:   string   // BUY / SELL
+  strategy:    string
+  price:       number
+  target:      number
+  stop_loss:   number
+  confidence:  number
+  reason:      string
+  mode:        string
+  status:      string   // SIGNAL / PAPER_FILLED / ORDER_PLACED / ORDER_REJECTED
+  order_id?:   string
+  quantity:    number
+  paper_pnl?:  number
+  error?:      string
+  timestamp:   string
+}
+
+export interface LiveStatus {
+  running:      boolean
+  available?:   boolean
+  strategy:     string
+  strategies?:  string[]
+  min_agree?:   number
+  mode:         string
+  timeframe:    string
+  symbols:      string[]
+  started_at?:  string
+  paper_pnl:    number
+  recent_calls: LiveCall[]
+}
+
+export const getLiveStrategies = async (): Promise<LiveStrategiesResponse> => {
+  const { data } = await client.get('/live/strategies')
+  return data
+}
+
+export const getLiveStatus = async (): Promise<LiveStatus> => {
+  const { data } = await client.get('/live/status')
+  return data
+}
+
+export const startLive = async (
+  strategies: string[],
+  minAgree: number,
+  mode: string,
+  timeframe: string,
+  symbols?: string[],
+): Promise<LiveStatus> => {
+  const { data } = await client.post('/live/start', {
+    strategies,
+    min_agree: minAgree,
+    mode,
+    timeframe,
+    symbols,
+  })
+  return data
+}
+
+export const stopLive = async (): Promise<void> => {
+  await client.post('/live/stop')
+}
+
+// SSE stream of live calls. Returns the EventSource so the caller can close it.
+export const openLiveCallsStream = (onCall: (c: LiveCall) => void): EventSource => {
+  const es = new EventSource(`${BASE_URL}/live/calls`)
+  es.onmessage = (ev) => {
+    try { onCall(JSON.parse(ev.data) as LiveCall) } catch { /* ignore */ }
+  }
+  return es
+}
+
+// A persisted trade call as returned by the day-history endpoint.
+export interface LiveCallRecord {
+  id:          number
+  called_at:   string
+  symbol:      string
+  direction:   string
+  strategy:    string
+  price:       number
+  target:      number
+  stop_loss:   number
+  confidence:  number
+  reason:      string
+  mode:        string
+  status:      string
+  order_id?:   string
+  quantity:    number
+  paper_pnl?:  number
+  error?:      string
+}
+
+export interface LiveCallsHistory {
+  date:  string
+  calls: LiveCallRecord[]
+}
+
+// Fetches the trade calls the engine emitted on a given day (YYYY-MM-DD).
+// Omitting the date returns today's calls.
+export const getLiveCallsHistory = async (date?: string): Promise<LiveCallsHistory> => {
+  const { data } = await client.get('/live/calls/history', {
+    params: date ? { date } : undefined,
+  })
+  return data
+}
+
+// ─── Live candles & candlestick patterns ─────────────────────────────────────
+
+export interface LiveCandle {
+  symbol: string
+  interval: string
+  start: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+  closed: boolean
+}
+
+export interface PatternMeta {
+  key: string
+  name: string
+  direction: 'bullish' | 'bearish' | 'neutral'
+}
+
+export interface PatternHit {
+  key: string
+  name: string
+  direction: 'bullish' | 'bearish' | 'neutral'
+  index: number
+  time: number  // unix seconds
+  price: number
+}
+
+export interface CandleSnapshot {
+  symbol: string
+  interval: string
+  candles: LiveCandle[]
+  patterns: PatternHit[]
+  current?: LiveCandle
+}
+
+export const getPatterns = async (): Promise<PatternMeta[]> => {
+  const { data } = await client.get('/live/patterns')
+  return data.patterns ?? []
+}
+
+export const getCandleSnapshot = async (symbol: string): Promise<CandleSnapshot> => {
+  const { data } = await client.get('/live/snapshot', { params: { symbol } })
+  return data
+}
+
+export interface OptionChainRow {
+  strike: number
+  call_oi: number
+  put_oi: number
+  call_chg_oi: number
+  put_chg_oi: number
+  call_ltp: number
+  put_ltp: number
+}
+
+export interface OIAnalysis {
+  underlying: string
+  spot: number
+  expiry: string
+  pcr: number
+  max_pain: number
+  support: number
+  resistance: number
+  chg_support: number
+  chg_resistance: number
+  has_change: boolean
+  total_call_oi: number
+  total_put_oi: number
+  bias: 'bullish' | 'bearish' | 'neutral'
+  rows: OptionChainRow[]
+  as_of: string
+}
+
+export interface OIResponse {
+  available: boolean
+  oi?: OIAnalysis
+  error?: string
+}
+
+export const getLiveOI = async (symbol: string): Promise<OIResponse> => {
+  const { data } = await client.get('/live/oi', { params: { symbol } })
+  return data
+}
+
+export interface ReplayCall {
+  time: number // unix seconds
+  direction: string
+  price: number
+  strategy: string
+  reason: string
+}
+
+export interface HistorySnapshot {
+  symbol: string
+  interval: string
+  candles: LiveCandle[]
+  patterns: PatternHit[]
+  calls: ReplayCall[]
+  strategy: string
+  replayed: boolean
+  available?: boolean
+  error?: string
+}
+
+export const getLiveHistory = async (
+  symbol: string,
+  timeframe?: string,
+  strategy?: string,
+  range: BacktestRange = {},
+): Promise<HistorySnapshot> => {
+  const params: Record<string, string | number | undefined> = { symbol, timeframe, strategy }
+  if (range.from) params.from = range.from
+  if (range.to) params.to = range.to
+  if (range.days) params.days = range.days
+  const { data } = await client.get('/live/history', { params })
+  return data
+}
+
+// SSE stream of candles for one symbol. Returns the EventSource to close it.
+export const openCandleStream = (
+  symbol: string,
+  onCandle: (c: LiveCandle) => void,
+): EventSource => {
+  const es = new EventSource(`${BASE_URL}/live/candles?symbol=${encodeURIComponent(symbol)}`)
+  es.onmessage = (ev) => {
+    try { onCandle(JSON.parse(ev.data) as LiveCandle) } catch { /* ignore */ }
+  }
+  return es
+}
+
+// Handle for a live candle WebSocket. `close()` stops auto-reconnect and tears
+// down the socket. The stream pushes closed + in-progress candles tick-by-tick.
+export interface CandleStream {
+  close: () => void
+}
+
+// WebSocket stream of candles for one symbol. Preferred over SSE: lower latency,
+// no proxy buffering, and it auto-reconnects with backoff if the socket drops.
+export const openCandleSocket = (
+  symbol: string,
+  onCandle: (c: LiveCandle) => void,
+): CandleStream => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const url = `${proto}://${window.location.host}${BASE_URL}/live/candles/ws?symbol=${encodeURIComponent(symbol)}`
+
+  let ws: WebSocket | null = null
+  let closed = false
+  let retry = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+  const connect = () => {
+    if (closed) return
+    ws = new WebSocket(url)
+    ws.onopen = () => { retry = 0 }
+    ws.onmessage = (ev) => {
+      try { onCandle(JSON.parse(ev.data) as LiveCandle) } catch { /* ignore */ }
+    }
+    ws.onclose = () => {
+      if (closed) return
+      // Exponential backoff capped at 10s.
+      const delay = Math.min(10000, 500 * 2 ** retry)
+      retry += 1
+      reconnectTimer = setTimeout(connect, delay)
+    }
+    ws.onerror = () => { ws?.close() }
+  }
+
+  connect()
+
+  return {
+    close: () => {
+      closed = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      ws?.close()
+    },
+  }
 }

@@ -360,3 +360,39 @@ func (r *Repository) GetDashboardSummary() (map[string]interface{}, error) {
 	}
 	return result, nil
 }
+
+// ─── App Settings ─────────────────────────────────────────────────────────────
+
+func (r *Repository) GetSetting(key string) (string, error) {
+	var s AppSetting
+	err := r.db.Where("key = ?", key).First(&s).Error
+	if err != nil {
+		return "", err
+	}
+	return s.Value, nil
+}
+
+func (r *Repository) SetSetting(key, value string) error {
+	return r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&AppSetting{Key: key, Value: value}).Error
+}
+
+// ─── Live calls ───────────────────────────────────────────────────────────────
+
+// CreateLiveCall persists a single emitted trade call.
+func (r *Repository) CreateLiveCall(c *LiveCallRecord) error {
+	return r.db.Create(c).Error
+}
+
+// GetLiveCallsByDate returns all trade calls emitted on the given calendar day
+// (local time), ordered oldest-first by CalledAt.
+func (r *Repository) GetLiveCallsByDate(day time.Time) ([]LiveCallRecord, error) {
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	end := start.AddDate(0, 0, 1)
+	var calls []LiveCallRecord
+	err := r.db.Where("called_at >= ? AND called_at < ?", start, end).
+		Order("called_at asc").Find(&calls).Error
+	return calls, err
+}

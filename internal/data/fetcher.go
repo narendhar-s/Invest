@@ -168,6 +168,11 @@ func (f *Fetcher) FetchAll() error {
 	return nil
 }
 
+// FetchOneSymbol fetches data for a single symbol (public wrapper used by the AddStock API).
+func (f *Fetcher) FetchOneSymbol(symbol string) error {
+	return f.fetchSymbol(symbol)
+}
+
 func (f *Fetcher) fetchSymbol(symbol string) error {
 	// Get or create the stock record
 	stock, err := f.repo.GetStockBySymbol(symbol)

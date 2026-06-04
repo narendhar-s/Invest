@@ -16,6 +16,7 @@ type Config struct {
 	Indicators     IndicatorsConfig     `mapstructure:"indicators"`
 	Recommendation RecommendationConfig `mapstructure:"recommendation"`
 	Backtest       BacktestConfig       `mapstructure:"backtest"`
+	Zerodha        ZerodhaConfig        `mapstructure:"zerodha"`
 }
 
 type AuthConfig struct {
@@ -50,6 +51,8 @@ type DataConfig struct {
 	HistoryDays          int    `mapstructure:"history_days"`
 	IntradayInterval     string `mapstructure:"intraday_interval"`
 	IntradayRange        string `mapstructure:"intraday_range"`
+	Source               string `mapstructure:"source"`           // "yfinance" | "zerodha"
+	LiveDefaultQty       int    `mapstructure:"live_default_qty"`
 }
 
 type MarketsConfig struct {
@@ -87,6 +90,12 @@ type BacktestConfig struct {
 	SlippagePct    float64 `mapstructure:"slippage_pct"`
 }
 
+type ZerodhaConfig struct {
+	APIKey      string `mapstructure:"api_key"`
+	APISecret   string `mapstructure:"api_secret"`
+	RedirectURL string `mapstructure:"redirect_url"`
+}
+
 func Load(cfgFile string) (*Config, error) {
 	v := viper.New()
 
@@ -112,6 +121,9 @@ func Load(cfgFile string) (*Config, error) {
 	// Auth — loaded from env only (never committed to repo)
 	v.BindEnv("auth.portfolio_password", "PORTFOLIO_PASSWORD")
 	v.BindEnv("auth.jwt_secret", "JWT_SECRET")
+
+	v.BindEnv("zerodha.api_key", "ZERODHA_API_KEY")
+	v.BindEnv("zerodha.api_secret", "ZERODHA_API_SECRET")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)

@@ -9,6 +9,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        // Forward WebSocket upgrades (live candle stream) to the backend.
+        ws: true,
       },
     },
   },

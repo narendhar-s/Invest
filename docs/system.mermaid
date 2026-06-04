@@ -1,0 +1,65 @@
+flowchart TB
+    %% ─── External data ───────────────────────────────
+    subgraph EXT["External"]
+        ZWS["Zerodha Kite<br/>Ticker WebSocket"]
+        ZOI["Kite /quote<br/>(option chain / OI)"]
+        ZORD["Kite Order API"]
+        YF["Yahoo Finance<br/>(seed history)"]
+    end
+
+    %% ─── Go backend ───────────────────────────────────
+    subgraph BE["Go Backend (gin + gorm)"]
+        TICK["KiteTicker<br/>(tick stream)"]
+        AGG["CandleAggregator<br/>(ticks → candles)"]
+
+        subgraph ENGINE["LiveEngine"]
+            BUF["Per-symbol<br/>candle buffers"]
+            STRAT["Strategies<br/>(ORB / VWAP / SMC / ...)"]
+            CONS["consensusCall<br/>(min-agree + conflict cancel)"]
+            OIF["OI confirmation<br/>filter"]
+            EXEC["execute(call, mode)<br/>signal / paper / live"]
+            CALLS["in-memory calls[]<br/>(cap 100)"]
+        end
+
+        REPO["storage.Repository<br/>(gorm)"]
+        API["HTTP / SSE / WS API<br/>(router.go)"]
+    end
+
+    %% ─── Database ─────────────────────────────────────
+    subgraph DB["Postgres"]
+        LCR[("live_call_records<br/>(persisted calls,<br/>indexed called_at)")]
+        OTHER[("stocks / trades /<br/>holdings / ...")]
+    end
+
+    %% ─── Frontend ─────────────────────────────────────
+    subgraph FE["React + TypeScript Frontend"]
+        LT["LiveTrading page"]
+        FEED["Calls feed<br/>Live feed / By day toggle"]
+        DATE["Date picker<br/>(history)"]
+        CHART["LiveChart<br/>(lightweight-charts)"]
+        OVL["Overlays + Draw layer<br/>(indicators / SMC / scripts)"]
+    end
+
+    %% ─── Flows ────────────────────────────────────────
+    ZWS --> TICK --> AGG --> BUF --> STRAT --> CONS --> OIF --> EXEC
+    ZOI -. cached OI .-> OIF
+    YF -. seed buffers .-> BUF
+
+    EXEC --> CALLS
+    EXEC -- persistCall --> REPO
+    EXEC -- live order --> ZORD
+    REPO --> LCR
+    REPO --- OTHER
+
+    ENGINE -- "Start(): hydrate today's calls" --> REPO
+
+    CALLS -- "SSE /live/calls" --> API
+    REPO -- "GET /live/calls/history?date=" --> API
+
+    API -- "SSE (live)" --> FEED
+    API -- "history JSON" --> FEED
+    API -- "WS candles" --> CHART
+    DATE --> FEED
+    FEED --> LT
+    CHART --> OVL
+    OVL --> LT
