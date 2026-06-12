@@ -1,0 +1,150 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NarenInvestment configuration — consumed by the Naren feature set that is
+# mounted inside the merged StockWise binary under /api/naren/v1 and /naren.
+#
+# The HTTP server, port, and Invest-side settings come from config.yaml; this
+# file only supplies the extra services Naren needs (Angel One, Kite, Mongo).
+#
+# Zerodha Kite credentials are SHARED with Invest (same Kite app key) so a single
+# Zerodha login works for both halves of the app.
+# ─────────────────────────────────────────────────────────────────────────────
+
+server:
+  port: 8082          # unused in the merged binary (Naren is mounted, not standalone)
+  open_browser: false
+
+# ── Angel One SmartAPI: DISABLED ───────────────────────────────────────────────
+# This app does not use Angel One at all — all real-time data comes from the
+# Zerodha Kite websocket. Kept here (disabled) only for reference.
+angel_one:
+  enabled: false
+  api_key: ""
+  client_id: ""
+  password: ""
+  totp_secret: ""
+
+database:
+  host: localhost
+  port: 5432
+  user: stockwise
+  password: stockwise123
+  name: stockwise_db
+  sslmode: disable
+  timezone: Asia/Kolkata
+
+data:
+  refresh_interval_hours: 6
+  history_days: 365
+  intraday_interval: "5m"
+  intraday_range: "5d"
+
+markets:
+  nse:
+    enabled: true
+    symbols:
+      - RELIANCE.NS
+      - TCS.NS
+      - HDFCBANK.NS
+      - INFY.NS
+      - ICICIBANK.NS
+      - HINDUNILVR.NS
+      - SBIN.NS
+      - BHARTIARTL.NS
+      - ITC.NS
+      - KOTAKBANK.NS
+      - LT.NS
+      - AXISBANK.NS
+      - ASIANPAINT.NS
+      - MARUTI.NS
+      - TITAN.NS
+      - BAJFINANCE.NS
+      - WIPRO.NS
+      - HCLTECH.NS
+      - ULTRACEMCO.NS
+      - NESTLEIND.NS
+      - SUNPHARMA.NS
+      - ONGC.NS
+      - NTPC.NS
+      - POWERGRID.NS
+      - ADANIENT.NS
+    indices:
+      - "^NSEI"
+      - "^NSEBANK"
+
+  us:
+    enabled: true
+    symbols:
+      - AAPL
+      - MSFT
+      - GOOGL
+      - AMZN
+      - NVDA
+      - TSM
+      - META
+      - TSLA
+      - JPM
+      - JNJ
+      - V
+      - PG
+      - MA
+      - UNH
+      - HD
+      - BAC
+      - XOM
+      - CVX
+      - ABBV
+      - PFE
+      - COST
+      - NFLX
+      - ADBE
+      - CRM
+      - AMD
+      - INTC
+      - GLD
+    indices:
+      - "^GSPC"
+      - "^IXIC"
+
+indicators:
+  ma_periods: [20, 50, 200]
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std_dev: 2.0
+  vwap_period: 14
+
+recommendation:
+  strong_buy_threshold: 75
+  buy_threshold: 55
+  hold_threshold: 35
+  min_confidence: 20
+
+backtest:
+  default_capital: 100000
+  commission_pct: 0.1
+  slippage_pct: 0.05
+
+# ── Zerodha Kite Connect (SHARED with Invest) ──────────────────────────────────
+# Same Kite app key/secret as config.yaml's `zerodha:` block so one login covers
+# both Invest and Naren. The merged binary also bridges Invest's saved access
+# token into kite_token.json on startup, so connecting Zerodha once on the Invest
+# side automatically lights up the Naren Kite features.
+kite:
+  enabled: true
+  api_key: "rhwcpeoekvr0j875"
+  api_secret: "pvcu5duid5ukd9yt3xhoa2uf5wkipvp8"
+  redirect_url: "http://localhost:8080/api/v1/zerodha/callback"
+  # ⚠️ MASTER KILL-SWITCH FOR REAL ORDERS. Leave false to keep everything paper.
+  # Set true ONLY when you intend to let the challenge's Live mode place REAL
+  # buy/sell orders on your Zerodha account. The per-challenge Live toggle in the
+  # UI still has to be turned on as well (and it resets to OFF on every restart).
+  live_trading_enabled: true
+
+# ── MongoDB (optional — used by Kite NSE snapshot store) ───────────────────────
+# Leave uri empty to disable Mongo-backed NSE snapshots; Kite paper trading and
+# live signals still work without it.
+mongo:
+  uri: ""
+  database: "stockwise_nse"

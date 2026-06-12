@@ -79,7 +79,7 @@ build_backend() {
   go mod download
   log "Building backend binary -> bin/stockwise"
   mkdir -p bin
-  go build -o bin/stockwise ./cmd/main.go
+  go build -o bin/stockwise ./cmd
   log "Backend built: $(ls -lh bin/stockwise | awk '{print $5, $9}')"
 }
 
@@ -90,6 +90,13 @@ build_frontend() {
   log "Building frontend production bundle..."
   (cd frontend && npm run build)
   log "Frontend built -> frontend/dist"
+  if [ -d frontend-naren ]; then
+    log "Installing Naren sub-app npm dependencies..."
+    (cd frontend-naren && npm install --no-audit --no-fund)
+    log "Building Naren sub-app production bundle..."
+    (cd frontend-naren && npm run build)
+    log "Naren sub-app built -> frontend-naren/dist"
+  fi
 }
 
 # ---------- 5. Optional: start the stack ----------

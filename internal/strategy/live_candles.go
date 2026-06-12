@@ -61,7 +61,7 @@ func (e *LiveEngine) liveCandleLoop(agg *data.CandleAggregator, stopCh chan stru
 			syms := append([]string(nil), e.symbols...)
 			e.mu.RUnlock()
 			for _, sym := range syms {
-				if cur, ok := agg.Current(sym); ok {
+				if cur, ok := agg.Current(e.canonicalSymbol(sym)); ok {
 					e.broadcastCandle(cur)
 				}
 			}
@@ -72,8 +72,9 @@ func (e *LiveEngine) liveCandleLoop(agg *data.CandleAggregator, stopCh chan stru
 // Snapshot returns the current closed-candle history for a symbol plus detected
 // patterns and the in-progress candle, for initial chart rendering.
 func (e *LiveEngine) Snapshot(symbol string) CandleSnapshot {
+	key := e.canonicalSymbol(symbol)
 	e.mu.RLock()
-	candles := append([]data.Candle(nil), e.buffers[symbol]...)
+	candles := append([]data.Candle(nil), e.buffers[key]...)
 	interval := e.timeframe
 	agg := e.agg
 	e.mu.RUnlock()
@@ -85,7 +86,7 @@ func (e *LiveEngine) Snapshot(symbol string) CandleSnapshot {
 		Patterns: DetectPatterns(candles),
 	}
 	if agg != nil {
-		if cur, ok := agg.Current(symbol); ok {
+		if cur, ok := agg.Current(key); ok {
 			snap.Current = &cur
 		}
 	}

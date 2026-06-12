@@ -106,6 +106,9 @@ export default function LiveTrading() {
   const desktopRef = useRef(false)
   const mountTimeRef = useRef(Date.now())
   const esRef = useRef<EventSource | null>(null)
+  // Calls already shown/announced, so SSE and the status poll never double-count
+  // the same call. Keyed by timestamp+symbol+direction+price.
+  const seenRef = useRef<Set<string>>(new Set())
 
   // Keep refs in sync so the SSE callback (set up once) reads current values.
   useEffect(() => { notifyRef.current = notify }, [notify])
@@ -131,6 +134,21 @@ export default function LiveTrading() {
     showToast(title, body, kind)
     playBeep(c.direction !== 'SELL')
     if (desktopRef.current) showDesktopNotification(title, body)
+  }
+
+  // ingest adds a call to the feed + announces it, exactly once, whether it
+  // arrived over the SSE stream or was discovered by the status poll. This keeps
+  // the feed and the sound working even when the SSE stream fails to deliver.
+  const callKey = (c: LiveCall) => `${c.timestamp}|${c.symbol}|${c.direction}|${c.price}`
+  const ingest = (c: LiveCall) => {
+    const k = callKey(c)
+    if (seenRef.current.has(k)) return
+    seenRef.current.add(k)
+    setCalls((prev) => [c, ...prev].slice(0, 200))
+    announce(c)
+    if (c.status === 'PAPER_FILLED') {
+      getLiveStatus().then(setStatus).catch(() => {})
+    }
   }
 
   // Poll Zerodha connection state so we can prompt for the daily login.
@@ -191,16 +209,21 @@ export default function LiveTrading() {
   // Open the SSE stream once on mount; it replays recent calls automatically.
   // On each paper fill, refresh status immediately so paper_pnl stays current.
   useEffect(() => {
-    const es = openLiveCallsStream((c) => {
-      setCalls((prev) => [c, ...prev].slice(0, 200))
-      announce(c)
-      if (c.status === 'PAPER_FILLED') {
-        getLiveStatus().then(setStatus).catch(() => {})
-      }
-    })
+    const es = openLiveCallsStream((c) => ingest(c))
     esRef.current = es
     return () => es.close()
   }, [])
+
+  // Fallback path: whenever the status poll (every 5s) reports calls the SSE
+  // stream didn't deliver, ingest them. This makes the feed + sound work even if
+  // EventSource is blocked/buffered by the dev proxy. Calls older than page load
+  // are added silently (announce() suppresses them); genuinely new ones beep.
+  useEffect(() => {
+    const rc = status?.recent_calls
+    if (!rc || rc.length === 0) return
+    // recent_calls is oldest-first; ingest in that order so newest ends up on top.
+    for (const c of rc) ingest(c)
+  }, [status])
 
   // Poll status every 5 s while the engine is running so paper_pnl (and other
   // fields) stay up-to-date even between fills.
@@ -261,6 +284,7 @@ export default function LiveTrading() {
     setLiveStrategies((cur) =>
       cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
     )
+    setStratMenuOpen(false) // close the dropdown once a selection is made
   }
 
   // Keep the consensus threshold within [1, number of selected strategies].
@@ -781,7 +805,12 @@ export default function LiveTrading() {
                 confidence: c.confidence, status: c.status, reason: c.reason,
                 error: c.error, paper_pnl: c.paper_pnl,
               }))
-          : calls.map((c) => ({
+          // Prefer the live SSE feed; if it hasn't delivered (stream hiccup,
+          // reconnect, or page opened mid-session), fall back to the calls the
+          // backend already reports in status.recent_calls (polled every 5s), so
+          // emitted calls are never invisible just because the stream lagged.
+          : (calls.length ? calls : [...(status?.recent_calls ?? [])].reverse())
+              .map((c) => ({
               ts: c.timestamp, symbol: c.symbol, direction: c.direction,
               price: c.price, target: c.target, stop_loss: c.stop_loss,
               confidence: c.confidence, status: c.status, reason: c.reason,

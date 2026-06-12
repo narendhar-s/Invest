@@ -137,10 +137,20 @@ func main() {
 		liveSeed := data.NewZerodhaSource(kiteClient, data.NewYFinanceSource(data.NewYahooClient()))
 		liveEngine = strategy.NewLiveEngine(kiteClient, kiteTicker, liveSeed, cfg.Data.LiveDefaultQty)
 		liveEngine.SetRepository(repo)
+
+		// Auto-resume a previously-running live session across restarts so the
+		// engine stays on until explicitly stopped (persisted in DB settings).
+		go resumeLiveEngine(repo, liveEngine, kiteClient)
 	}
 
 	// ── HTTP Server starts immediately ────────────────────────────────────
 	router := api.NewRouter(repo, strategyEngine, fetcher, recEngine, kiteClient, kiteStream, liveEngine, dataSource, cfg)
+
+	// ── NarenInvestment feature set (mounted under /api/naren/v1 + /naren) ──
+	// Additive only: never alters Invest's own routes or behaviour. If the Naren
+	// side fails to initialise it is skipped and Invest still runs normally.
+	mountNaren(router, repo, cfg)
+
 	serverAddr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         serverAddr,

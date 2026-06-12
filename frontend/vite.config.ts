@@ -12,6 +12,13 @@ export default defineConfig({
         // Forward WebSocket upgrades (live candle stream) to the backend.
         ws: true,
       },
+      // The NarenInvestment sub-app is served by the backend under /naren.
+      // Proxy it so the Invest dev server (5173) can reach the Naren tabs too.
+      '/naren': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   build: {

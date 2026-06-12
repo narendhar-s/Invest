@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -162,6 +163,19 @@ func (h *Handler) LiveStart(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Persist the session so the engine auto-resumes after a backend restart and
+	// stays running until the user explicitly stops it (like the 90-day challenge).
+	if h.repo != nil {
+		cfg, _ := json.Marshal(map[string]any{
+			"strategies": keys,
+			"min_agree":  req.MinAgree,
+			"mode":       req.Mode,
+			"symbols":    req.Symbols,
+			"timeframe":  req.Timeframe,
+		})
+		_ = h.repo.SetSetting("live_engine_config", string(cfg))
+		_ = h.repo.SetSetting("live_engine_running", "true")
+	}
 	c.JSON(http.StatusOK, h.liveEngine.Status())
 }
 
@@ -169,6 +183,10 @@ func (h *Handler) LiveStart(c *gin.Context) {
 func (h *Handler) LiveStop(c *gin.Context) {
 	if h.liveEngine != nil {
 		h.liveEngine.Stop()
+	}
+	// Clear the persisted running flag so it does NOT auto-resume on restart.
+	if h.repo != nil {
+		_ = h.repo.SetSetting("live_engine_running", "false")
 	}
 	c.JSON(http.StatusOK, gin.H{"running": false})
 }
@@ -457,6 +475,50 @@ func (h *Handler) LiveOI(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"available": true, "oi": oi})
+}
+
+// LiveOIPulse returns the minute-by-minute OI Pulse for a symbol: the latest
+// price-vs-OI regime, a composite bullish/bearish verdict with confidence, the
+// rule hits behind it, and the recent per-minute history. Drives the OI Pulse page.
+func (h *Handler) LiveOIPulse(c *gin.Context) {
+	if h.kite == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Zerodha unavailable"})
+		return
+	}
+	if !h.kite.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Zerodha not connected"})
+		return
+	}
+	symbol := c.Query("symbol")
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+	// Optional comma-separated trade modes: option_buy,option_sell,futures_buy,futures_sell.
+	// Empty → all modes.
+	var modes []string
+	if raw := c.Query("modes"); raw != "" {
+		for _, m := range strings.Split(raw, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				modes = append(modes, m)
+			}
+		}
+	}
+	// Position-sizing cap and risk:reward, both configurable from the UI.
+	maxLots := 2 // default cap
+	if v, err := strconv.Atoi(c.Query("lots")); err == nil && v >= 1 {
+		maxLots = v
+	}
+	rr := 2.0 // default 1:2
+	if v, err := strconv.ParseFloat(c.Query("rr"), 64); err == nil && v > 0 {
+		rr = v
+	}
+	pulse, err := h.kite.OIPulseFor(symbol, modes, maxLots, rr)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"available": true, "pulse": pulse})
 }
 
 // LiveCallsStream is an SSE endpoint pushing trade calls as they are generated.

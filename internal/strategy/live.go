@@ -206,9 +206,13 @@ func (e *LiveEngine) Start(strategyKeys []string, minAgree int, mode string, sym
 		e.Stop()
 	}
 
+	logger.Info("live start: resolving symbols (loading instruments)",
+		zap.Strings("symbols", symbols), zap.String("timeframe", timeframe))
 	if err := e.ticker.SetSymbols(symbols); err != nil {
+		logger.Warn("live start failed: SetSymbols/LoadInstruments error", zap.Error(err))
 		return err
 	}
+	logger.Info("live start: symbols resolved, starting engine")
 
 	agg := data.NewCandleAggregator(timeframe)
 	e.ticker.OnTick(agg.AddTick)
@@ -229,7 +233,12 @@ func (e *LiveEngine) Start(strategyKeys []string, minAgree int, mode string, sym
 	stopCh := e.stopCh
 	e.mu.Unlock()
 
-	e.seedBuffers(symbols, timeframe)
+	// Seed historical bars in the background. Seeding hits Zerodha/Yahoo per
+	// symbol (each up to ~45s on a slow upstream), so doing it inline blocked the
+	// /live/start response past the UI's 30s timeout and surfaced as "failed to
+	// start". The engine starts immediately and strategies warm up as the seed
+	// fills in (and from live candles meanwhile).
+	go e.seedBuffers(symbols, timeframe)
 
 	candleCh := agg.Subscribe()
 	e.ticker.Start()
@@ -270,6 +279,26 @@ func (e *LiveEngine) IsRunning() bool {
 	return e.running
 }
 
+// canonicalSymbol returns the buffer key the live tick path will stamp on
+// candles for an app symbol. Equities arrive from the ticker as "<SYM>.NS"
+// (SymbolForToken appends the suffix) while the symbols passed to Start() are
+// the bare app form ("ITC", "^NSEI"). Seeding under the raw form would orphan
+// the history — live candles would land under "ITC.NS" and the buffer would
+// restart cold. Round-tripping through the Kite instrument map yields the exact
+// key the aggregator uses; if Kite is unavailable (or the symbol is unknown) we
+// fall back to the input unchanged.
+func (e *LiveEngine) canonicalSymbol(sym string) string {
+	if e.kite == nil {
+		return sym
+	}
+	if tok := e.kite.TokenForSymbol(sym); tok != 0 {
+		if canon := e.kite.SymbolForToken(tok); canon != "" {
+			return canon
+		}
+	}
+	return sym
+}
+
 // seedBuffers pre-fills the candle buffers from the configured data source so
 // strategies have enough history to evaluate immediately.
 func (e *LiveEngine) seedBuffers(symbols []string, timeframe string) {
@@ -286,8 +315,12 @@ func (e *LiveEngine) seedBuffers(symbols []string, timeframe string) {
 				zap.Error(err))
 			continue
 		}
+		// Key the buffer by the symbol the live tick path will emit, so seeded
+		// history and live candles share one buffer (see canonicalSymbol).
+		bufKey := e.canonicalSymbol(sym)
 		logger.Info("seed: buffer filled",
 			zap.String("symbol", sym),
+			zap.String("buffer_key", bufKey),
 			zap.String("timeframe", timeframe),
 			zap.Int("bars", len(bars)))
 		// Use the actual fetched interval label on seeded candles, not the live
@@ -297,7 +330,7 @@ func (e *LiveEngine) seedBuffers(symbols []string, timeframe string) {
 		candles := make([]data.Candle, 0, len(bars))
 		for _, b := range bars {
 			candles = append(candles, data.Candle{
-				Symbol: sym, Interval: seedInterval, Start: b.Time,
+				Symbol: bufKey, Interval: seedInterval, Start: b.Time,
 				Open: b.Open, High: b.High, Low: b.Low, Close: b.Close,
 				Volume: b.Volume, Closed: true,
 			})
@@ -305,8 +338,13 @@ func (e *LiveEngine) seedBuffers(symbols []string, timeframe string) {
 		if len(candles) > maxBuffer {
 			candles = candles[len(candles)-maxBuffer:]
 		}
+		// Seeding now runs in a goroutine, so a live candle may already have
+		// landed in this buffer. Only seed when it's still empty, so we never
+		// clobber live candles that arrived while history was being fetched.
 		e.mu.Lock()
-		e.buffers[sym] = candles
+		if len(e.buffers[bufKey]) == 0 {
+			e.buffers[bufKey] = candles
+		}
 		e.mu.Unlock()
 	}
 }

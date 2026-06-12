@@ -31,26 +31,61 @@ ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
 
 # ── 1. Kill anything currently running ────────────────────────────────────────
+# IMPORTANT: only kill what we're about to restart. `--frontend` must NOT take
+# down the backend (and vice-versa), otherwise restarting one leaves the other
+# dead and the /naren proxy points at nothing.
 log "Stopping running processes…"
-pkill -f "bin/stockwise"  2>/dev/null && ok "killed backend (bin/stockwise)" || warn "no backend running"
-pkill -f "cmd/main.go"    2>/dev/null || true   # in case it was started with `go run`
+if [ "$DO_BACKEND" -eq 1 ]; then
+  pkill -f "bin/stockwise"  2>/dev/null && ok "killed backend (bin/stockwise)" || warn "no backend running"
+  pkill -f "cmd/main.go"    2>/dev/null || true   # in case it was started with `go run`
+  lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
+fi
 if [ "$DO_FRONTEND" -eq 1 ]; then
   pkill -f "vite"         2>/dev/null && ok "killed frontend (vite)" || warn "no frontend running"
+  lsof -ti:5173 2>/dev/null | xargs kill -9 2>/dev/null || true
 fi
-# Free the ports as a backstop (ignore failures).
-lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
-[ "$DO_FRONTEND" -eq 1 ] && { lsof -ti:5173 2>/dev/null | xargs kill -9 2>/dev/null || true; }
 sleep 1
 
 # ── 2. Backend: ensure DB, rebuild, run ───────────────────────────────────────
 if [ "$DO_BACKEND" -eq 1 ]; then
   if [ "$DO_DB" -eq 1 ]; then
     log "Ensuring PostgreSQL is up…"
-    docker compose up -d postgres >/dev/null 2>&1 && ok "postgres up" || warn "could not start postgres (is Docker running?)"
+    if ! docker info >/dev/null 2>&1; then
+      warn "Docker isn't running — start Docker Desktop, then re-run (backend needs Postgres on :5432)."
+      exit 1
+    fi
+    # Both Invest and NarenInvestment compose files use the same container name
+    # (stockwise_postgres). Reuse it if it's already healthy; otherwise clear any
+    # stale/conflicting one and (re)create it, then WAIT until it accepts
+    # connections before starting the backend.
+    if docker exec stockwise_postgres pg_isready -U stockwise -d stockwise_db >/dev/null 2>&1; then
+      ok "postgres already running (reusing stockwise_postgres)"
+    else
+      docker rm -f stockwise_postgres >/dev/null 2>&1 || true
+      docker compose up -d postgres
+      log "Waiting for PostgreSQL to be ready…"
+      tries=0
+      until docker exec stockwise_postgres pg_isready -U stockwise -d stockwise_db >/dev/null 2>&1; do
+        tries=$((tries+1))
+        if [ "$tries" -gt 60 ]; then
+          warn "PostgreSQL did not become ready — check: docker compose logs postgres"
+          exit 1
+        fi
+        sleep 1
+      done
+      ok "postgres ready"
+    fi
+  fi
+
+  log "Building Naren sub-app bundle (served by backend at /naren)…"
+  if [ -d frontend-naren ]; then
+    ( cd frontend-naren && npm install --silent && npm run build ) \
+      && ok "frontend-naren built -> frontend-naren/dist" \
+      || warn "frontend-naren build failed — /naren may not render until fixed"
   fi
 
   log "Building backend…"
-  go build -o bin/stockwise ./cmd/main.go
+  go build -o bin/stockwise ./cmd
   ok "build succeeded"
 
   log "Starting backend on :8080…"

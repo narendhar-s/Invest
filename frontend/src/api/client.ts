@@ -804,6 +804,105 @@ export const getLiveOI = async (symbol: string): Promise<OIResponse> => {
   return data
 }
 
+export interface OIPulseRow {
+  at: string
+  unix: number
+  spot: number
+  pcr: number
+  total_call_oi: number
+  total_put_oi: number
+  total_oi: number
+  spot_chg: number
+  pcr_chg: number
+  call_oi_chg: number
+  put_oi_chg: number
+  total_oi_chg: number
+  regime: string
+  signal: 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+  score: number
+}
+
+export type TradeMode = 'option_buy' | 'option_sell' | 'futures_buy' | 'futures_sell'
+
+export interface OITradeDecision {
+  mode: TradeMode
+  mode_label: string
+  instrument: 'OPTION' | 'FUTURES'
+  action: string
+  option_type: string
+  side: string
+  moneyness: string
+  strike: number
+  atm_strike: number
+  strike_step: number
+  conviction: string
+  confidence: number
+  entry: string
+  target_note: string
+  stop_note: string
+  // Risk:reward + position sizing (configurable).
+  rr: number
+  entry_price: number
+  stop_price: number
+  target_price: number
+  max_lots: number
+  lots: number
+  qty: number
+  total_cost: number
+  // Live tradeable option leg (resolved via Kite); empty/zero when no trade.
+  tradingsymbol: string
+  option_exchange: string
+  expiry: string
+  lot_size: number
+  premium: number
+  cost_per_lot: number
+  approx_delta: number
+  rationale: string
+  notes: string[]
+}
+
+export interface OIPulse {
+  underlying: string
+  spot: number
+  expiry: string
+  pcr: number
+  max_pain: number
+  support: number
+  resistance: number
+  bias: 'bullish' | 'bearish' | 'neutral'
+  regime: string
+  signal: 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+  verdict: string
+  confidence: number
+  score: number
+  rules: string[]
+  has_prev: boolean
+  history: OIPulseRow[]
+  decision: OITradeDecision | null
+  decisions: OITradeDecision[]
+  as_of: string
+}
+
+export interface OIPulseResponse {
+  available: boolean
+  pulse?: OIPulse
+  error?: string
+}
+
+export const getOIPulse = async (
+  symbol: string,
+  modes?: TradeMode[],
+  maxLots?: number,
+  rr?: number,
+): Promise<OIPulseResponse> => {
+  const params: Record<string, string> = { symbol }
+  if (modes && modes.length > 0) params.modes = modes.join(',')
+  if (maxLots) params.lots = String(maxLots)
+  if (rr) params.rr = String(rr)
+  const { data } = await client.get('/live/oi/pulse', { params })
+  return data
+}
+
 export interface ReplayCall {
   time: number // unix seconds
   direction: string

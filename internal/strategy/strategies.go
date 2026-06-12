@@ -3,9 +3,27 @@ package strategy
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"stockwise/internal/data"
 )
+
+// forcedTestCall returns a synthetic BUY call when STOCKWISE_FORCE_SIGNAL=1, so
+// the live feed + alert sound can be exercised on the next candle without waiting
+// for a real setup. It is a TEST hook only — unset the env var (and rebuild) to
+// disable. Returns nil when the flag is off or there are no candles.
+func forcedTestCall(symbol, strategyName string, candles []data.Candle) *TradeCall {
+	if os.Getenv("STOCKWISE_FORCE_SIGNAL") != "1" || len(candles) == 0 {
+		return nil
+	}
+	price := candles[len(candles)-1].Close
+	return &TradeCall{
+		Symbol: symbol, Direction: "BUY", Strategy: strategyName,
+		Price: price, Target: price * 1.005, StopLoss: price * 0.997,
+		Confidence: 99,
+		Reason:     "FORCED TEST SIGNAL (STOCKWISE_FORCE_SIGNAL=1) — unset the env var to disable",
+	}
+}
 
 // TradeCall is a single actionable call produced by a live strategy.
 //
@@ -81,6 +99,9 @@ func init() {
 	Register(&rsiReversal{})
 	Register(&vwapScalp{})
 	Register(newPersonalStrategy())
+	Register(newTripleAxiomStrategy())
+	Register(newPersonalEMAStrategy())
+	Register(newUncleORBStrategy())
 }
 
 // Registry returns the map of all available live strategies keyed by Key().
@@ -196,6 +217,9 @@ func (s *vwapScalp) Description() string { return "Scalps reclaims/rejections of
 func (s *vwapScalp) MinCandles() int     { return 15 }
 
 func (s *vwapScalp) Evaluate(symbol string, candles []data.Candle) *TradeCall {
+	if tc := forcedTestCall(symbol, s.Name(), candles); tc != nil {
+		return tc
+	}
 	if len(candles) < s.MinCandles() {
 		return nil
 	}

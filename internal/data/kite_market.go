@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +16,18 @@ import (
 
 	"stockwise/pkg/logger"
 )
+
+// Zerodha rejects plain MARKET orders for F&O via the API. A requested MARKET
+// order on NFO is sent as a LIMIT priced this far past the current LTP (above
+// for BUY, below for SELL), emulating Zerodha's ~3% market protection.
+const (
+	nfoMarketProtectionPct = 0.03
+	nfoTickSize            = 0.05
+)
+
+func roundToNfoTick(p float64) float64 {
+	return math.Round(p/nfoTickSize) * nfoTickSize
+}
 
 // ─── Instrument token resolution ──────────────────────────────────────────────
 //
@@ -360,16 +373,39 @@ func (k *KiteClient) PlaceOrder(o OrderRequest) (string, error) {
 		o.OrderType = "MARKET"
 	}
 
+	// Zerodha does NOT accept plain MARKET orders for F&O via the API. Convert a
+	// requested MARKET order on NFO into a protective LIMIT priced past the LTP.
+	orderType := strings.ToUpper(o.OrderType)
+	price := o.Price
+	if orderType == "MARKET" && strings.EqualFold(exchange, "NFO") {
+		inst := exchange + ":" + trading
+		quotes, err := k.FetchLiveQuotes([]string{inst})
+		if err != nil {
+			return "", fmt.Errorf("fetching LTP to build protective limit for %s: %w", inst, err)
+		}
+		// FetchLiveQuotes re-keys NFO instruments by their bare tradingsymbol.
+		ltp := quotes[trading].LastPrice
+		if ltp <= 0 {
+			return "", fmt.Errorf("no live LTP for %s — cannot build protective limit order", inst)
+		}
+		if strings.EqualFold(o.TransactionType, "BUY") {
+			price = roundToNfoTick(ltp * (1 + nfoMarketProtectionPct))
+		} else {
+			price = roundToNfoTick(ltp * (1 - nfoMarketProtectionPct))
+		}
+		orderType = "LIMIT"
+	}
+
 	form := url.Values{}
 	form.Set("tradingsymbol", trading)
 	form.Set("exchange", exchange)
 	form.Set("transaction_type", strings.ToUpper(o.TransactionType))
 	form.Set("quantity", strconv.Itoa(o.Quantity))
 	form.Set("product", o.Product)
-	form.Set("order_type", o.OrderType)
+	form.Set("order_type", orderType)
 	form.Set("validity", "DAY")
-	if o.OrderType == "LIMIT" && o.Price > 0 {
-		form.Set("price", strconv.FormatFloat(o.Price, 'f', 2, 64))
+	if orderType == "LIMIT" && price > 0 {
+		form.Set("price", strconv.FormatFloat(price, 'f', 2, 64))
 	}
 
 	endpoint := fmt.Sprintf("%s/orders/%s", kiteAPIBase, o.Variety)

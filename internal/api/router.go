@@ -103,6 +103,7 @@ func NewRouter(repo *storage.Repository, engine *strategy.Engine, fetcher *data.
 		v1.GET("/live/candles",    h.LiveCandlesStream)
 		v1.GET("/live/candles/ws", h.LiveCandlesWS)
 		v1.GET("/live/oi",         h.LiveOI)
+		v1.GET("/live/oi/pulse",   h.LiveOIPulse)
 		v1.GET("/live/history",    h.LiveHistory)
 		v1.GET("/live/backtest",   h.LiveBacktest)
 	}
@@ -117,6 +118,12 @@ func NewRouter(repo *storage.Repository, engine *strategy.Engine, fetcher *data.
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
 			c.Header("Cache-Control", "no-store")
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		// Serve the NarenInvestment SPA shell for any /naren/* client route.
+		// (Naren's static assets are served separately under /naren/assets.)
+		if c.Request.Method == http.MethodGet && strings.HasPrefix(c.Request.URL.Path, "/naren") {
+			c.File("./frontend-naren/dist/index.html")
 			return
 		}
 		// Serve the frontend SPA for client-side routes.

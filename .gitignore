@@ -11,6 +11,15 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
+# Naren sub-app frontend
+frontend-naren/node_modules/
+frontend-naren/dist/
+frontend-naren/.vite/
+frontend-naren/package-lock.json
+
+# Shared Zerodha Kite token (written at runtime, day-scoped)
+kite_token.json
+
 # IDE
 .vscode/
 .idea/
