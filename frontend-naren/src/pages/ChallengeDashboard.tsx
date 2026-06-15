@@ -64,6 +64,24 @@ interface ChallengeStatus {
   live_window_end?: string
   live_hold_confidence?: number
   live_rr?: number
+  live_max_daily_loss?: number
+  live_max_consec_losses?: number
+  live_daily_risk_capital?: number
+}
+
+// Streamed every ~2s over SSE from /live/stream (Kite-WebSocket driven).
+interface LiveSnap {
+  spot?: number
+  total_pnl?: number
+  today_pnl?: number
+  ticker_live?: boolean
+  last_error?: string
+  open_option?: {
+    current_premium?: number
+    pnl?: number
+    pnl_pct?: number
+    premium_change?: number
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -151,20 +169,28 @@ function StatsRow({ s }: { s: ChallengeStatus }) {
 
 // ─── Open position ────────────────────────────────────────────────────────────
 
-function OpenPosition({ t, pnl, onExit }: { t: ChallengeTrade; pnl: number; onExit: () => void }) {
+function OpenPosition({ t, pnl, onExit, current, pnlPct, liveOn }: { t: ChallengeTrade; pnl: number; onExit: () => void; current?: number; pnlPct?: number; liveOn?: boolean }) {
   const risk = t.qty * (t.entry_premium - (t.entry_premium - (t.entry_premium * 0.33)))
   return (
     <div className={`rounded-xl border p-5 ${bgpc(pnl)}`}>
       <div className="flex items-start justify-between mb-3">
         <div>
-          <p className="text-xs text-slate-400 mb-1">Open Position — Day {t.day_number}</p>
+          <p className="text-xs text-slate-400 mb-1 flex items-center gap-1.5">
+            Open Position — Day {t.day_number}
+            {liveOn && <span className="inline-flex items-center gap-1 text-emerald-400"><span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />live</span>}
+          </p>
           <p className="text-xl font-bold text-slate-100">{t.trading_symbol}</p>
           <p className="text-sm text-slate-400">
             Expiry: <span className="text-emerald-300">{t.expiry}</span> · DTE at entry: {t.dte}d · {t.qty} qty ({t.lots} lots)
           </p>
         </div>
         <div className="text-right">
-          <p className={`text-3xl font-bold ${pc(pnl)}`}>{sgn(pnl)}₹{fmt(pnl)}</p>
+          <p className={`text-3xl font-bold ${pc(pnl)}`}>{sgn(pnl)}₹{fmt(pnl)}
+            {pnlPct != null && <span className="text-sm ml-1">({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(0)}%)</span>}
+          </p>
+          {current != null && current > 0 && (
+            <p className="text-xs text-slate-400">LTP ₹{current.toFixed(1)} <span className="text-slate-500">(entry ₹{t.entry_premium?.toFixed(1)})</span></p>
+          )}
           <button onClick={onExit}
             className="mt-1 px-4 py-1.5 bg-red-600/80 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition-colors">
             Square Off
@@ -258,14 +284,18 @@ function ChainPanel({ chain }: { chain?: ChainSnap }) {
 
 // ─── Equity curve ─────────────────────────────────────────────────────────────
 
-function EquityCurve({ days, initial }: { days: ChallengeDay[]; initial: number }) {
-  if (days.length < 2) return (
+function EquityCurve({ days, initial, current }: { days: ChallengeDay[]; initial: number; current?: number }) {
+  const w = 900, h = 200, padX = 8, padY = 12
+  // Start at initial capital, add each completed day's closing balance, then a
+  // live "now" point so the curve updates intraday (via the SSE stream) instead
+  // of only after end-of-day snapshots are written.
+  const vals = [initial, ...days.map(d => d.closing_balance)]
+  if (current != null && current > 0 && Math.abs(current - vals[vals.length - 1]) > 0.5) vals.push(current)
+  if (vals.length < 2) return (
     <div className="bg-slate-800/60 rounded-xl border border-slate-700/50 p-8 text-center text-slate-400 text-sm">
-      Equity curve will appear after the first trading day.
+      Equity curve will appear once trading begins.
     </div>
   )
-  const w = 900, h = 200, padX = 8, padY = 12
-  const vals = [initial, ...days.map(d => d.closing_balance)]
   const minV = Math.min(...vals), maxV = Math.max(...vals)
   const range = maxV - minV || 1
   const sx = (i: number) => padX + (i / Math.max(vals.length - 1, 1)) * (w - 2 * padX)
@@ -568,6 +598,122 @@ function StartForm({ onStart }: { onStart: () => void }) {
   )
 }
 
+// ─── Backtest panel ─────────────────────────────────────────────────────────
+
+function BacktestPanel() {
+  const [days, setDays] = useState(60)
+  const [lots, setLots] = useState(2)
+  const [risk, setRisk] = useState(5000)
+  const [target, setTarget] = useState(10000)
+  const [res, setRes] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const run = async () => {
+    setBusy(true); setErr(''); setRes(null)
+    try {
+      const r = await post('/api/naren/v1/challenge/backtest', { days, lots, risk, target })
+      if (r?.error) setErr(r.error); else setRes(r)
+    } catch { setErr('backtest failed') }
+    finally { setBusy(false) }
+  }
+
+  const cards: [string, string, string][] = res ? [
+    ['Total P&L', `${res.total_pnl >= 0 ? '+' : ''}₹${fmt(res.total_pnl)}`, pc(res.total_pnl)],
+    ['Trades', `${res.trades?.length || 0}`, 'text-slate-200'],
+    ['Win Rate', `${fmtF(res.win_rate, 0)}%`, res.win_rate >= 50 ? 'text-emerald-400' : 'text-yellow-400'],
+    ['Profit Factor', fmtF(res.profit_factor, 2), res.profit_factor >= 1.3 ? 'text-emerald-400' : 'text-red-400'],
+    ['Expectancy/trade', `₹${fmt(res.expectancy)}`, pc(res.expectancy)],
+    ['Max Drawdown', `-₹${fmt(res.max_drawdown)}`, 'text-red-400'],
+    ['Avg Win', `₹${fmt(res.avg_win)}`, 'text-emerald-400'],
+    ['Avg Loss', `₹${fmt(res.avg_loss)}`, 'text-red-400'],
+    ['Reward:Risk', fmtF(res.reward_risk, 2), 'text-slate-200'],
+    ['Max Consec Loss', `${res.max_consec_loss}`, 'text-slate-300'],
+  ] : []
+
+  return (
+    <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 p-5">
+      <div className="flex items-end gap-3 flex-wrap">
+        <h3 className="text-sm font-semibold text-slate-200 mr-1">🧪 Backtest the challenge</h3>
+        <label className="text-xs text-slate-400">Days
+          <input type="number" min={5} max={180} value={days} onChange={e => setDays(+e.target.value)} className="block mt-1 w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" /></label>
+        <label className="text-xs text-slate-400">Lots
+          <input type="number" min={1} value={lots} onChange={e => setLots(+e.target.value)} className="block mt-1 w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" /></label>
+        <label className="text-xs text-slate-400">Risk ₹
+          <input type="number" min={500} step={500} value={risk} onChange={e => setRisk(+e.target.value)} className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" /></label>
+        <label className="text-xs text-slate-400">Target ₹
+          <input type="number" min={500} step={500} value={target} onChange={e => setTarget(+e.target.value)} className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" /></label>
+        <button onClick={run} disabled={busy} className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">{busy ? 'Running…' : 'Run Backtest'}</button>
+      </div>
+      {err && <p className="text-red-400 text-xs mt-2">⚠ {err}</p>}
+      {res && (
+        <div className="mt-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+            {cards.map(([k, v, c]) => (
+              <div key={k} className="bg-slate-800/60 rounded-lg p-2 border border-slate-700/40">
+                <p className="text-slate-500 text-[10px]">{k}</p>
+                <p className={`text-sm font-bold ${c}`}>{v}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-slate-500 mt-2">{res.pricing_note}</p>
+          <p className="text-[10px] text-amber-400/80 mt-1">Simulated (Black-Scholes premiums, no costs/slippage). Past performance ≠ future results.</p>
+
+          {/* Trade-by-trade log: every entry/exit the challenge would have taken */}
+          {res.trades?.length > 0 && (
+            <div className="mt-4 bg-slate-800/60 rounded-xl border border-slate-700/50 overflow-hidden">
+              <div className="px-4 py-2 border-b border-slate-700/50 flex items-center justify-between">
+                <h4 className="text-xs font-semibold text-slate-200">Trades it would have taken</h4>
+                <span className="text-[10px] text-slate-500">{res.trades.length} trades</span>
+              </div>
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-slate-800/95">
+                    <tr className="text-slate-400 border-b border-slate-700/40">
+                      <th className="text-left px-3 py-2">#</th>
+                      <th className="text-left px-3 py-2 whitespace-nowrap">Entry</th>
+                      <th className="text-left px-3 py-2 whitespace-nowrap">Exit</th>
+                      <th className="text-left px-2 py-2">Contract</th>
+                      <th className="text-left px-2 py-2">Dir</th>
+                      <th className="text-right px-2 py-2">Conf</th>
+                      <th className="text-right px-2 py-2">DTE</th>
+                      <th className="text-right px-2 py-2">Entry₹</th>
+                      <th className="text-right px-2 py-2">Exit₹</th>
+                      <th className="text-left px-2 py-2">Reason</th>
+                      <th className="text-right px-3 py-2">P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.trades.map((t: any, i: number) => (
+                      <tr key={i} className={`border-b border-slate-700/15 hover:bg-slate-700/20 ${t.pnl >= 0 ? '' : 'bg-red-500/5'}`}>
+                        <td className="px-3 py-1.5 text-slate-500">{i + 1}</td>
+                        <td className="px-3 py-1.5 text-slate-400 font-mono whitespace-nowrap">
+                          {new Date(t.entry_time).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="px-3 py-1.5 text-slate-400 font-mono whitespace-nowrap">
+                          {t.exit_time ? new Date(t.exit_time).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
+                        </td>
+                        <td className="px-2 py-1.5 font-mono text-slate-200 whitespace-nowrap">{t.strike?.toFixed(0)} {t.option_type}</td>
+                        <td className={`px-2 py-1.5 ${t.direction === 'BULLISH' ? 'text-emerald-400' : t.direction === 'BEARISH' ? 'text-red-400' : 'text-slate-400'}`}>{t.direction}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-400">{t.confidence}%</td>
+                        <td className="px-2 py-1.5 text-right text-slate-400">{t.dte}d</td>
+                        <td className="px-2 py-1.5 text-right font-mono text-slate-200">₹{t.entry_premium?.toFixed(1)}</td>
+                        <td className="px-2 py-1.5 text-right font-mono text-slate-300">₹{t.exit_premium?.toFixed(1)}</td>
+                        <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{t.exit_reason}</td>
+                        <td className={`px-3 py-1.5 text-right font-bold ${pc(t.pnl)}`}>{sgn(t.pnl)}₹{fmt(t.pnl)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Live trading panel ───────────────────────────────────────────────────────
 
 function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onChange: () => void }) {
@@ -579,6 +725,9 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
   const [winEnd, setWinEnd] = useState<string>(status.live_window_end || '')
   const [holdConf, setHoldConf] = useState<number>(status.live_hold_confidence || 70)
   const [rr, setRr] = useState<number>(status.live_rr || 0)
+  const [maxDailyLoss, setMaxDailyLoss] = useState<number>(status.live_max_daily_loss || 0)
+  const [maxConsec, setMaxConsec] = useState<number>(status.live_max_consec_losses || 0)
+  const [dailyRiskCap, setDailyRiskCap] = useState<number>(status.live_daily_risk_capital || 0)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -591,7 +740,10 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
     if (status.live_window_end != null) setWinEnd(status.live_window_end)
     if (status.live_hold_confidence) setHoldConf(status.live_hold_confidence)
     if (status.live_rr != null) setRr(status.live_rr)
-  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr])
+    if (status.live_max_daily_loss != null) setMaxDailyLoss(status.live_max_daily_loss)
+    if (status.live_max_consec_losses != null) setMaxConsec(status.live_max_consec_losses)
+    if (status.live_daily_risk_capital != null) setDailyRiskCap(status.live_daily_risk_capital)
+  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr, status.live_max_daily_loss, status.live_max_consec_losses, status.live_daily_risk_capital])
 
   const allowed = !!status.live_allowed
 
@@ -607,6 +759,9 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
         window_end: winEnd,
         hold_confidence: holdConf,
         rr: rr,
+        max_daily_loss: maxDailyLoss,
+        max_consec_losses: maxConsec,
+        daily_risk_capital: dailyRiskCap,
       })
       if (r?.error) { setMsg(r.error); setEnabled(!!status.live_enabled) }
       else onChange()
@@ -666,6 +821,24 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
               title="Live profit target = Risk × RR. 0 = use the ₹ profit square-off / challenge target."
               className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
           </label>
+          <label className="text-xs text-slate-400">Max loss / day (₹)
+            <input type="number" min={0} step={1000} value={maxDailyLoss}
+              onChange={e => setMaxDailyLoss(Math.max(0, +e.target.value))}
+              title="Once the day's realized LIVE loss reaches this, no more live trades today. 0 = no limit."
+              className="block mt-1 w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Max B2B losses / day
+            <input type="number" min={0} step={1} value={maxConsec}
+              onChange={e => setMaxConsec(Math.max(0, Math.floor(+e.target.value)))}
+              title="Stop live trades after this many back-to-back losing trades in a day. 0 = no limit."
+              className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Risk capital / day (₹)
+            <input type="number" min={0} step={1000} value={dailyRiskCap}
+              onChange={e => setDailyRiskCap(Math.max(0, +e.target.value))}
+              title="Day's live risk budget. Stops once (live trades today × risk/trade) reaches this. 0 = no limit."
+              className="block mt-1 w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
           <button disabled={!allowed || busy} onClick={() => { const n = !enabled; setEnabled(n); save(n) }}
             className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${status.live_enabled ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}>
             {busy ? '…' : status.live_enabled ? 'Turn LIVE off' : 'Go LIVE'}
@@ -700,6 +873,7 @@ export default function ChallengeDashboard() {
   const [expiries, setExpiries] = useState<any[]>([])
   const [tab,     setTab]     = useState<'live' | 'trades' | 'daily' | 'expiry'>('live')
   const [error,   setError]   = useState('')
+  const [live,    setLive]    = useState<LiveSnap | null>(null)
 
   const loadAll = useCallback(async () => {
     try {
@@ -723,6 +897,16 @@ export default function ChallengeDashboard() {
     return () => clearInterval(id)
   }, [status?.active, loadAll])
 
+  // Live price/P&L via SSE (backend pushes the Kite-WebSocket-driven snapshot
+  // every ~2s). EventSource auto-reconnects on drop. Tables still refresh on the
+  // 15s poll above; this just keeps the open position's price and P&L live.
+  useEffect(() => {
+    if (!status?.active) { setLive(null); return }
+    const es = new EventSource('/api/naren/v1/live/stream')
+    es.onmessage = (e) => { try { setLive(JSON.parse(e.data)) } catch { /* ignore */ } }
+    return () => es.close()
+  }, [status?.active])
+
   const onExit = async () => {
     await post('/api/naren/v1/challenge/exit')
     loadAll()
@@ -732,6 +916,24 @@ export default function ChallengeDashboard() {
     () => trades.find(t => t.status === 'OPEN') ?? undefined,
     [trades]
   )
+
+  // Merge the live SSE snapshot over the polled status so the headline P&L and
+  // stats update every ~2s instead of only on the 15s reload.
+  const dispStatus = useMemo(() => {
+    if (!status || !live) return status
+    const tp = live.total_pnl ?? status.total_pnl
+    const op = live.open_option?.pnl ?? status.open_pnl ?? 0
+    const initial = status.active?.initial_capital
+    return {
+      ...status,
+      total_pnl: tp,
+      today_pnl: live.today_pnl ?? status.today_pnl,
+      open_pnl:  op,
+      // Live mark-to-market equity = initial + realized + open, so the capital
+      // growth curve and stats move with every tick.
+      current_capital: initial != null ? initial + tp + op : status.current_capital,
+    }
+  }, [status, live])
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 space-y-5">
@@ -767,12 +969,18 @@ export default function ChallengeDashboard() {
       {/* Active challenge */}
       {status?.active && (
         <>
-          <Countdown status={status} />
-          <StatsRow s={status} />
+          <Countdown status={dispStatus || status} />
+          <StatsRow s={dispStatus || status} />
+          <BacktestPanel />
 
           {/* Open position */}
           {openTrade && (
-            <OpenPosition t={openTrade} pnl={status.open_pnl} onExit={onExit} />
+            <OpenPosition t={openTrade}
+              pnl={live?.open_option?.pnl ?? status.open_pnl}
+              pnlPct={live?.open_option?.pnl_pct}
+              current={live?.open_option?.current_premium}
+              liveOn={!!live?.ticker_live}
+              onExit={onExit} />
           )}
 
           {/* Tab nav */}
@@ -820,12 +1028,12 @@ export default function ChallengeDashboard() {
                 </div>
               )}
               <ChainPanel chain={status.last_chain} />
-              <EquityCurve days={days} initial={status.active.initial_capital} />
+              <EquityCurve days={days} initial={status.active.initial_capital} current={(dispStatus || status).current_capital} />
             </div>
           )}
 
           {tab === 'trades' && <TradeLog trades={trades} />}
-          {tab === 'daily' && <div className="space-y-5"><DailyTable days={days} /><EquityCurve days={days} initial={status.active.initial_capital} /></div>}
+          {tab === 'daily' && <div className="space-y-5"><DailyTable days={days} /><EquityCurve days={days} initial={status.active.initial_capital} current={(dispStatus || status).current_capital} /></div>}
           {tab === 'expiry' && <ExpiryBreakdown data={expiries} />}
         </>
       )}

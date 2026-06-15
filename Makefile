@@ -17,7 +17,7 @@ deps:
 
 # Build the Go binary
 build:
-	go build -o bin/stockwise ./cmd/main.go
+	go build -o bin/stockwise ./cmd
 
 # Run the backend (assumes DB is up)
 run: build

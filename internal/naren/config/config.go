@@ -57,6 +57,16 @@ type Config struct {
 	AngelOne       AngelOneConfig       `mapstructure:"angel_one"`
 	Kite           KiteConfig           `mapstructure:"kite"`
 	Mongo          MongoConfig          `mapstructure:"mongo"`
+	Telegram       TelegramConfig       `mapstructure:"telegram"`
+}
+
+// TelegramConfig controls the Telegram remote-control bot. Commands are only
+// honoured from chat IDs in AllowedChatIDs; live-trading commands additionally
+// require the kite.live_trading_enabled master switch and an in-chat confirm.
+type TelegramConfig struct {
+	Enabled        bool    `mapstructure:"enabled"`
+	BotToken       string  `mapstructure:"bot_token"`
+	AllowedChatIDs []int64 `mapstructure:"allowed_chat_ids"`
 }
 
 type AuthConfig struct {

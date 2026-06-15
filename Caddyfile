@@ -1,0 +1,9 @@
+# Caddy reverse proxy with automatic HTTPS (Let's Encrypt).
+# DOMAIN is injected from docker-compose.oci.yml. Caddy obtains and renews the
+# TLS certificate automatically once the domain's DNS points at this VM and
+# ports 80/443 are reachable.
+
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8080
+}

@@ -1,0 +1,48 @@
+# OCI single-VM stack, HTTP-only (no domain / no TLS) — for quick testing by IP.
+# Serves the app directly on port 80:  http://<VM_PUBLIC_IP>/naren/challenge
+# Once you have a domain, switch to docker-compose.oci.yml (Caddy + HTTPS).
+#
+#   export POSTGRES_PASSWORD=change-me
+#   docker compose -f docker-compose.oci-http.yml up -d --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockwise_postgres
+    environment:
+      POSTGRES_USER: stockwise
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      POSTGRES_DB: stockwise_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockwise -d stockwise_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.oci
+    container_name: stockwise_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: stockwise
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      DATABASE_NAME: stockwise_db
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./config.naren.yaml:/app/config.naren.yaml:ro
+      - ./kite_token.json:/app/kite_token.json
+    ports:
+      - "80:8080"   # host port 80 → app's 8080
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

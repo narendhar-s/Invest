@@ -47,6 +47,8 @@ type Indicators struct {
 	Spot          float64 `json:"spot"`
 	EMA9          float64 `json:"ema9"`
 	EMA21         float64 `json:"ema21"`
+	EMA50         float64 `json:"ema50"`         // higher-timeframe trend filter
+	RSI14         float64 `json:"rsi14"`         // momentum confirmation
 	ATR14         float64 `json:"atr14"`
 	VWAPProxy     float64 `json:"vwap_proxy"`
 	TrendStrength float64 `json:"trend_strength"` // 0-100
@@ -86,6 +88,8 @@ func Analyze(candles []kite.Candle, isExpiryDay bool) (*Recommendation, error) {
 
 	ema9 := ema(closes, 9)
 	ema21 := ema(closes, 21)
+	ema50 := ema(closes, 50)   // higher-timeframe trend proxy
+	rsi14 := rsi(closes, 14)   // momentum confirmation
 	atr := atr14(candles)
 	vwap := vwapProxy(candles)
 	orH, orL := openingRange(candles)
@@ -102,15 +106,25 @@ func Analyze(candles []kite.Candle, isExpiryDay bool) (*Recommendation, error) {
 	strength := math.Min(100, (sep*40)+(math.Abs(slope)/math.Max(atr, 1)*60))
 
 	ind := Indicators{
-		Spot: spot, EMA9: round2(ema9), EMA21: round2(ema21), ATR14: round2(atr),
+		Spot: spot, EMA9: round2(ema9), EMA21: round2(ema21), EMA50: round2(ema50),
+		RSI14: round2(rsi14), ATR14: round2(atr),
 		VWAPProxy: round2(vwap), TrendStrength: round2(strength),
 		ORHigh: orH, ORLow: orL, DayChangePct: round2(dayChangePct),
 	}
 
-	bullish := ema9 > ema21 && spot > ema21 && spot > vwap
-	bearish := ema9 < ema21 && spot < ema21 && spot < vwap
+	// Trend must agree across timeframes (EMA9>EMA21>EMA50, price above the
+	// higher-TF EMA and VWAP), momentum must confirm (RSI), and we refuse to
+	// chase blow-off extremes. This is core trend-following discipline used by
+	// professional systematic traders: align timeframes, demand confluence,
+	// avoid chop, and don't buy a vertical move that's already overextended.
+	bullish := ema9 > ema21 && ema21 > ema50 && spot > ema50 && spot > vwap && rsi14 >= 52 && rsi14 <= 78
+	bearish := ema9 < ema21 && ema21 < ema50 && spot < ema50 && spot < vwap && rsi14 <= 48 && rsi14 >= 22
 
-	now := candles[len(candles)-1].Time
+	// Normalize to IST before checking the opening-range window. Kite candles
+	// carry an IST offset, but the Yahoo fallback returns UTC — without this
+	// conversion the ORB window (09:15–10:00 IST) would be detected at the
+	// wrong hour (or never) on fallback data.
+	now := candles[len(candles)-1].Time.In(ISTLoc())
 	inORBWindow := now.Hour() == 9 || (now.Hour() == 10 && now.Minute() == 0)
 
 	rec := &Recommendation{ATMStrike: atm, Indicators: ind, AsOf: now}
@@ -227,6 +241,29 @@ func ema(values []float64, period int) float64 {
 	return e
 }
 
+// rsi returns the Relative Strength Index over the last `period` closes (0-100).
+// Used as a momentum filter: only buy calls into up-momentum, puts into down-
+// momentum, and never into already-overextended (overbought/oversold) prices.
+func rsi(closes []float64, period int) float64 {
+	if len(closes) <= period {
+		return 50
+	}
+	var gain, loss float64
+	for i := len(closes) - period; i < len(closes); i++ {
+		ch := closes[i] - closes[i-1]
+		if ch >= 0 {
+			gain += ch
+		} else {
+			loss -= ch
+		}
+	}
+	if loss == 0 {
+		return 100
+	}
+	rs := (gain / float64(period)) / (loss / float64(period))
+	return 100 - 100/(1+rs)
+}
+
 func ema9Slope(closes []float64) float64 {
 	if len(closes) < 12 {
 		return 0
@@ -269,9 +306,13 @@ func vwapProxy(candles []kite.Candle) float64 {
 }
 
 func openingRange(candles []kite.Candle) (high, low float64) {
-	day := candles[len(candles)-1].Time.YearDay()
+	// Normalize to IST: Kite candles carry an IST offset but the Yahoo fallback
+	// returns UTC, so the 09:15 opening bar must be matched in IST or the OR
+	// (and every ORB signal) would be wrong on fallback data.
+	last := candles[len(candles)-1].Time.In(ISTLoc())
 	for _, c := range candles {
-		if c.Time.YearDay() == day && c.Time.Hour() == 9 && c.Time.Minute() < 30 {
+		t := c.Time.In(ISTLoc())
+		if t.YearDay() == last.YearDay() && t.Hour() == 9 && t.Minute() < 30 {
 			return c.High, c.Low
 		}
 	}

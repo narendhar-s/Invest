@@ -64,7 +64,7 @@ type PaperPosition struct {
 	ATMStrike   float64
 	TargetPnL   float64
 	StopPnL     float64
-	RealizedPnL float64
+	RealizedPnL float64      `gorm:"column:realized_pnl"` // pin name: GORM would otherwise map PnL → realized_pn_l, but the repo queries realized_pnl
 	ExitReason  string
 	Reasoning   StringSlice  `gorm:"type:text"`
 	Status      string       `gorm:"not null;type:varchar(10);index;default:'OPEN'"`

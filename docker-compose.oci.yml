@@ -1,0 +1,70 @@
+# OCI single-VM production stack: Postgres + app + Caddy (automatic HTTPS).
+#
+# Usage on the VM:
+#   export DOMAIN=trade.example.com          # your DNS A-record → VM public IP
+#   export POSTGRES_PASSWORD=change-me-please
+#   docker compose -f docker-compose.oci.yml up -d --build
+#
+# Config files (config.yaml, config.naren.yaml) and kite_token.json are mounted
+# from the repo dir so you can edit secrets on the VM without rebuilding.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockwise_postgres
+    environment:
+      POSTGRES_USER: stockwise
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      POSTGRES_DB: stockwise_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockwise -d stockwise_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.oci
+    container_name: stockwise_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: stockwise
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      DATABASE_NAME: stockwise_db
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./config.naren.yaml:/app/config.naren.yaml:ro
+      - ./kite_token.json:/app/kite_token.json   # persists the daily Zerodha token
+    # No public port — only Caddy reaches it on the internal network.
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: stockwise_caddy
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

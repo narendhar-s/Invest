@@ -148,3 +148,13 @@ kite:
 mongo:
   uri: ""
   database: "stockwise_nse"
+
+# ── Telegram remote-control bot ────────────────────────────────────────────────
+# Control the 90-day challenge from Telegram. Create a bot with @BotFather to get
+# bot_token, then message your bot and read your numeric chat id (e.g. via
+# @userinfobot). ONLY chat ids listed here can issue commands. Live-trading
+# commands still require kite.live_trading_enabled above AND an in-chat /confirm.
+telegram:
+  enabled: false
+  bot_token: ""
+  allowed_chat_ids: []   # e.g. [123456789]

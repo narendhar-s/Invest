@@ -1,0 +1,42 @@
+# Production image for OCI single-VM deployment.
+# Builds both SPAs (Invest + Naren) and the Go server into one container.
+# Config files (config.yaml, config.naren.yaml) are NOT baked in — they are
+# mounted at runtime by docker-compose.oci.yml so secrets stay off the image.
+
+# ── 1. Build the two frontends ────────────────────────────────────────────────
+FROM node:20-alpine AS web
+WORKDIR /web
+
+# Invest SPA
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm ci
+COPY frontend ./frontend
+RUN cd frontend && npm run build
+
+# Naren SPA
+COPY frontend-naren/package*.json ./frontend-naren/
+RUN cd frontend-naren && npm ci
+COPY frontend-naren ./frontend-naren
+RUN cd frontend-naren && npm run build
+
+# ── 2. Build the Go server ────────────────────────────────────────────────────
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o stockwise ./cmd
+
+# ── 3. Final runtime image ────────────────────────────────────────────────────
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates tzdata
+ENV TZ=Asia/Kolkata
+WORKDIR /app
+
+COPY --from=builder /app/stockwise .
+# Built SPA assets (served from ./frontend/dist and ./frontend-naren/dist)
+COPY --from=web /web/frontend/dist ./frontend/dist
+COPY --from=web /web/frontend-naren/dist ./frontend-naren/dist
+
+EXPOSE 8080
+CMD ["./stockwise"]

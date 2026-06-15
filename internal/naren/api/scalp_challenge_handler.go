@@ -74,6 +74,9 @@ func (h *Handler) ScalpChallengeLiveConfig(c *gin.Context) {
 		WindowEnd      string  `json:"window_end"`
 		HoldConfidence int     `json:"hold_confidence"`
 		RR             float64 `json:"rr"`
+		MaxDailyLoss     float64 `json:"max_daily_loss"`
+		MaxConsecLosses  int     `json:"max_consec_losses"`
+		DailyRiskCapital float64 `json:"daily_risk_capital"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -88,6 +91,9 @@ func (h *Handler) ScalpChallengeLiveConfig(c *gin.Context) {
 		WindowEnd:      body.WindowEnd,
 		HoldConfidence: body.HoldConfidence,
 		RR:             body.RR,
+		MaxDailyLoss:     body.MaxDailyLoss,
+		MaxConsecLosses:  body.MaxConsecLosses,
+		DailyRiskCapital: body.DailyRiskCapital,
 	}); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return

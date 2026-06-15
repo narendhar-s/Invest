@@ -64,6 +64,9 @@ interface ChallengeStatus {
   live_window_end?: string
   live_hold_confidence?: number
   live_rr?: number
+  live_max_daily_loss?: number
+  live_max_consec_losses?: number
+  live_daily_risk_capital?: number
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -579,6 +582,9 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
   const [winEnd, setWinEnd] = useState<string>(status.live_window_end || '')
   const [holdConf, setHoldConf] = useState<number>(status.live_hold_confidence || 70)
   const [rr, setRr] = useState<number>(status.live_rr || 0)
+  const [maxDailyLoss, setMaxDailyLoss] = useState<number>(status.live_max_daily_loss || 0)
+  const [maxConsec, setMaxConsec] = useState<number>(status.live_max_consec_losses || 0)
+  const [dailyRiskCap, setDailyRiskCap] = useState<number>(status.live_daily_risk_capital || 0)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -591,7 +597,10 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
     if (status.live_window_end != null) setWinEnd(status.live_window_end)
     if (status.live_hold_confidence) setHoldConf(status.live_hold_confidence)
     if (status.live_rr != null) setRr(status.live_rr)
-  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr])
+    if (status.live_max_daily_loss != null) setMaxDailyLoss(status.live_max_daily_loss)
+    if (status.live_max_consec_losses != null) setMaxConsec(status.live_max_consec_losses)
+    if (status.live_daily_risk_capital != null) setDailyRiskCap(status.live_daily_risk_capital)
+  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr, status.live_max_daily_loss, status.live_max_consec_losses, status.live_daily_risk_capital])
 
   const allowed = !!status.live_allowed
 
@@ -607,6 +616,9 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
         window_end: winEnd,
         hold_confidence: holdConf,
         rr: rr,
+        max_daily_loss: maxDailyLoss,
+        max_consec_losses: maxConsec,
+        daily_risk_capital: dailyRiskCap,
       })
       if (r?.error) { setMsg(r.error); setEnabled(!!status.live_enabled) }
       else onChange()
@@ -665,6 +677,24 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
               onChange={e => setRr(Math.max(0, +e.target.value))}
               title="Live profit target = Risk × RR. 0 = use the ₹ profit square-off / challenge target."
               className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Max loss / day (₹)
+            <input type="number" min={0} step={1000} value={maxDailyLoss}
+              onChange={e => setMaxDailyLoss(Math.max(0, +e.target.value))}
+              title="Once the day's realized LIVE loss reaches this, no more live trades today. 0 = no limit."
+              className="block mt-1 w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Max B2B losses / day
+            <input type="number" min={0} step={1} value={maxConsec}
+              onChange={e => setMaxConsec(Math.max(0, Math.floor(+e.target.value)))}
+              title="Stop live trades after this many back-to-back losing trades in a day. 0 = no limit."
+              className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Risk capital / day (₹)
+            <input type="number" min={0} step={1000} value={dailyRiskCap}
+              onChange={e => setDailyRiskCap(Math.max(0, +e.target.value))}
+              title="Day's live risk budget. Stops once (live trades today × risk/trade) reaches this. 0 = no limit."
+              className="block mt-1 w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
           </label>
           <button disabled={!allowed || busy} onClick={() => { const n = !enabled; setEnabled(n); save(n) }}
             className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${status.live_enabled ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}>

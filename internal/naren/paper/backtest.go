@@ -382,6 +382,224 @@ func (e *Engine) Backtest(days int, rr, riskPct float64, lots, confThreshold int
 	return res, nil
 }
 
+// BacktestChallenge replays the 90-day OPTIONS challenge's EXACT rules over
+// historical 15-minute NIFTY candles, so you can validate the strategy before
+// trusting it live. It uses the same options.Analyze signal, directional ATM
+// CE/PE buying, confidence ≥ 55, the expiry-day theta gate, the per-day trade
+// cap, the daily loss limit, a signal-aware exit (reversal/NO_TRADE), fixed ₹
+// SL/target, and an EOD square-off. Premiums are simulated with Black-Scholes
+// (IV scaled from 15m ATR) so it works WITHOUT the paid Kite historical add-on.
+func (e *Engine) BacktestChallenge(days, lots int, risk, target float64) (*BacktestResult, error) {
+	if days <= 0 || days > 180 { days = 60 }
+	if lots <= 0 { lots = 2 }
+	if risk <= 0 { risk = 5000 }
+	if target <= 0 { target = risk * 2 }
+
+	now := time.Now().In(options.ISTLoc())
+	from := now.AddDate(0, 0, -days)
+	candles, err := e.kc.HistoricalData(
+		kite.NiftyIndexToken, "15minute",
+		from.Format("2006-01-02 15:04:05"), now.Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetching NIFTY 15m candles: %w", err)
+	}
+	if len(candles) < 55 {
+		return nil, fmt.Errorf("too little data: need ≥55 candles, got %d (try a longer lookback)", len(candles))
+	}
+
+	qty := float64(lots * kite.NiftyLotSize)
+	res := &BacktestResult{
+		From: candles[0].Time, To: candles[len(candles)-1].Time,
+		Capital: e.account.Capital, Lots: lots, RR: target / risk,
+		RiskPerTrade: risk, TargetPerTrade: target,
+	}
+
+	closes := make([]float64, len(candles))
+	for i, c := range candles { closes[i] = c.Close }
+	ema9s := computeEMASeries(closes, 9)
+	ema21s := computeEMASeries(closes, 21)
+
+	type openT struct {
+		bt          BacktestTrade
+		entryPrem   float64
+		strike      float64
+		isCall      bool
+		iv          float64
+		expiry      time.Time
+	}
+	var open *openT
+	var equity, peak, maxDD float64
+	var consecLoss, maxConsecLoss int
+
+	curDay := -1
+	tradesToday := 0
+	realizedToday := 0.0
+	exitBarSet := map[int]string{}
+
+	const warmup = 50 // EMA50 in the refined analyzer needs ~50 bars warmed up
+	for i := warmup; i < len(candles); i++ {
+		bar := candles[i]
+		spot := bar.Close
+		bIST := bar.Time.In(options.ISTLoc())
+		isEOD := bIST.Hour() == 15 && bIST.Minute() >= 15
+		if bIST.YearDay() != curDay {
+			curDay = bIST.YearDay()
+			tradesToday = 0
+			realizedToday = 0
+		}
+
+		rec, _ := options.Analyze(candles[:i+1], false)
+
+		// ── Manage open position ──────────────────────────────────────────
+		if open != nil {
+			open.bt.BarsHeld++
+			barDTE := options.ActualDTE(bar.Time, open.expiry)
+			curPrem := options.BSPrice(spot, open.strike, open.iv, barDTE, open.isCall)
+			pnl := (curPrem - open.entryPrem) * qty
+
+			exitReason := ""
+			finalPnL := pnl
+			switch {
+			case pnl >= target:
+				exitReason = fmt.Sprintf("Target +₹%.0f", target)
+				finalPnL = target
+			case pnl <= -risk:
+				exitReason = fmt.Sprintf("Stop-loss -₹%.0f", risk)
+				finalPnL = -risk
+			case rec != nil && backtestSignalExit(open.isCall, rec):
+				exitReason = "Signal exit (reversal/NO_TRADE)"
+			case isEOD:
+				exitReason = "EOD square-off"
+			}
+
+			if exitReason != "" {
+				t := &open.bt
+				t.ExitTime = bar.Time
+				t.ExitSpot = spot
+				t.ExitPremium = round2p(curPrem)
+				t.PnL = round2p(finalPnL)
+				t.PnLPerLot = round2p(finalPnL / float64(lots))
+				t.ExitReason = exitReason
+				res.Trades = append(res.Trades, *t)
+
+				equity += finalPnL
+				realizedToday += finalPnL
+				if equity > peak { peak = equity }
+				if dd := peak - equity; dd > maxDD { maxDD = dd }
+				res.EquityCurve = append(res.EquityCurve, EquityPoint{
+					Time: bar.Time, Equity: round2p(equity), Trade: len(res.Trades) - 1,
+				})
+				exitBarSet[i] = t.Direction
+				if finalPnL < 0 {
+					consecLoss++
+					if consecLoss > maxConsecLoss { maxConsecLoss = consecLoss }
+				} else {
+					consecLoss = 0
+				}
+				open = nil
+			}
+		}
+
+		// Bar signal overlay (entry flag set below if we open here)
+		bs := BarSignal{
+			Time: bar.Time, Open: bar.Open, High: bar.High, Low: bar.Low,
+			Close: bar.Close, Volume: bar.Volume,
+			EMA9: round2p(ema9s[i]), EMA21: round2p(ema21s[i]),
+		}
+		if rec != nil { bs.Strategy = string(rec.Strategy); bs.Regime = string(rec.Regime) }
+		if d, ok := exitBarSet[i]; ok { bs.IsExit = true; bs.EntryDir = d }
+
+		// ── New entry (challenge rules) ────────────────────────────────────
+		canEnter := open == nil && !isEOD && rec != nil &&
+			rec.Strategy != options.StratNone && len(rec.Legs) > 0 && rec.Confidence >= 55 &&
+			tradesToday < maxTradesPerDay &&
+			!(risk > 0 && realizedToday <= -dailyLossLimitR*risk)
+
+		if canEnter {
+			expiry := options.NiftyWeeklyExpiry(bar.Time)
+			isExpiry := expiry.Format("2006-01-02") == bIST.Format("2006-01-02")
+			var isCall bool
+			ok := true
+			switch rec.Strategy {
+			case options.StratDirectionalCE, options.StratORBCE:
+				isCall = true
+			case options.StratDirectionalPE, options.StratORBPE:
+				isCall = false
+			default:
+				ok = false // neutral structures are not traded by the challenge
+			}
+			if ok && !(isExpiry && rec.Confidence < expiryMinConfidence) {
+				atr15m := recentATR(candles, i)
+				iv := options.IVFromATR15m(atr15m, spot)
+				dte := options.ActualDTE(bar.Time, expiry)
+				atm := rec.ATMStrike
+				entryPrem := options.BSPrice(spot, atm, iv, dte, isCall)
+				if entryPrem > 0 {
+					ot := "PE"
+					if isCall { ot = "CE" }
+					open = &openT{
+						bt: BacktestTrade{
+							EntryTime: bar.Time, Strategy: string(rec.Strategy), Direction: rec.Direction,
+							EntrySpot: spot, ATMStrike: atm, Strike: atm, OptionType: ot,
+							Expiry: expiry.Format("2006-01-02"), ExpiryLabel: options.ExpiryLabel(expiry),
+							Confidence: rec.Confidence, EntryPremium: round2p(entryPrem),
+							IV: round2p(iv * 100), DTE: dte,
+							DeltaEntry:  round2p(options.BSDelta(spot, atm, iv, dte, isCall)),
+							PriceSource: "BS", SignalBasis: rec.Reasoning,
+						},
+						entryPrem: entryPrem, strike: atm, isCall: isCall, iv: iv, expiry: expiry,
+					}
+					tradesToday++
+					bs.IsEntry = true
+					bs.EntryDir = rec.Direction
+				}
+			}
+		}
+		res.BarSignals = append(res.BarSignals, bs)
+	}
+
+	// ── Summary metrics (same as Backtest) ────────────────────────────────
+	var totalWin, totalLoss float64
+	for _, t := range res.Trades {
+		res.TotalPnL += t.PnL
+		if t.PnL >= 0 { res.WinCount++; totalWin += t.PnL } else { res.LossCount++; totalLoss += t.PnL }
+		res.BSPriceTrades++
+	}
+	res.TotalPnL = round2p(res.TotalPnL)
+	res.MaxDrawdown = round2p(maxDD)
+	res.MaxConsecLoss = maxConsecLoss
+	n := len(res.Trades)
+	if n > 0 {
+		res.WinRate = round2p(float64(res.WinCount) / float64(n) * 100)
+		res.Expectancy = round2p(res.TotalPnL / float64(n))
+	}
+	if res.WinCount > 0 { res.AvgWin = round2p(totalWin / float64(res.WinCount)) }
+	if res.LossCount > 0 {
+		res.AvgLoss = round2p(totalLoss / float64(res.LossCount))
+		if res.AvgWin != 0 { res.RewardRisk = round2p(math.Abs(res.AvgWin / res.AvgLoss)) }
+	}
+	if totalLoss != 0 { res.ProfitFactor = round2p(math.Abs(totalWin / totalLoss)) }
+	res.PricingNote = fmt.Sprintf(
+		"Challenge replay: %d trades, Black-Scholes premiums (IV from 15m ATR). Rules: conf≥55, directional-only, max %d trades/day, daily stop -%.0fR, expiry-day conf≥%d, signal-aware + SL/target/EOD exits.",
+		n, maxTradesPerDay, dailyLossLimitR, expiryMinConfidence,
+	)
+	return res, nil
+}
+
+// backtestSignalExit mirrors the live signal-based exit for the backtest: a CE
+// position exits when the signal is no longer BULLISH (reversal/NEUTRAL/NO_TRADE),
+// a PE when no longer BEARISH.
+func backtestSignalExit(isCall bool, rec *options.Recommendation) bool {
+	if rec.Strategy == options.StratNone {
+		return true
+	}
+	if isCall {
+		return rec.Direction != "BULLISH"
+	}
+	return rec.Direction != "BEARISH"
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 func computeEMASeries(values []float64, period int) []float64 {

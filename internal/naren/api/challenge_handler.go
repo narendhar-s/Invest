@@ -6,9 +6,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"stockwise/internal/naren/config"
 	"stockwise/internal/naren/kite"
 	"stockwise/internal/naren/paper"
 	"stockwise/internal/naren/storage"
+	"stockwise/internal/naren/telegram"
 )
 
 // ─── Service singleton ────────────────────────────────────────────────────────
@@ -38,6 +40,52 @@ func InitChallenge(db *storage.DB, kc *kite.Client, ticker *kite.Ticker, logger 
 	scalpChallengeSvc.Start()
 
 	logger.Info("challenge services initialised (options + scalp)")
+}
+
+// StartTelegram launches the Telegram remote-control bot if enabled. It binds to
+// the already-initialised challenge services, so call it after InitChallenge.
+func StartTelegram(cfg config.TelegramConfig, logger *zap.Logger) {
+	if !cfg.Enabled || cfg.BotToken == "" {
+		logger.Info("telegram bot disabled")
+		return
+	}
+	if len(cfg.AllowedChatIDs) == 0 {
+		logger.Warn("telegram bot enabled but allowed_chat_ids is empty — refusing to start (no authorized chats)")
+		return
+	}
+	if challengeSvc == nil {
+		logger.Warn("telegram bot: challenge service not initialised — skipping")
+		return
+	}
+	bot := telegram.New(telegram.Config{
+		Enabled:        cfg.Enabled,
+		BotToken:       cfg.BotToken,
+		AllowedChatIDs: cfg.AllowedChatIDs,
+	}, challengeSvc, scalpChallengeSvc, logger)
+	bot.Start()
+}
+
+// ChallengeBacktest replays the OPTIONS challenge's exact rules over historical
+// 15m NIFTY candles and returns the performance result (trades, equity curve,
+// win rate, drawdown, expectancy, profit factor). POST /challenge/backtest.
+func (h *Handler) ChallengeBacktest(c *gin.Context) {
+	if kiteSvc == nil || kiteSvc.engine == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kite engine not initialised"})
+		return
+	}
+	var body struct {
+		Days   int     `json:"days"`
+		Lots   int     `json:"lots"`
+		Risk   float64 `json:"risk"`
+		Target float64 `json:"target"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	res, err := kiteSvc.engine.BacktestChallenge(body.Days, body.Lots, body.Risk, body.Target)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 func challengeReady(c *gin.Context) bool {
@@ -94,6 +142,9 @@ func (h *Handler) ChallengeLiveConfig(c *gin.Context) {
 		WindowEnd      string  `json:"window_end"`
 		HoldConfidence int     `json:"hold_confidence"`
 		RR             float64 `json:"rr"`
+		MaxDailyLoss     float64 `json:"max_daily_loss"`
+		MaxConsecLosses  int     `json:"max_consec_losses"`
+		DailyRiskCapital float64 `json:"daily_risk_capital"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -108,6 +159,9 @@ func (h *Handler) ChallengeLiveConfig(c *gin.Context) {
 		WindowEnd:      body.WindowEnd,
 		HoldConfidence: body.HoldConfidence,
 		RR:             body.RR,
+		MaxDailyLoss:     body.MaxDailyLoss,
+		MaxConsecLosses:  body.MaxConsecLosses,
+		DailyRiskCapital: body.DailyRiskCapital,
 	}); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return

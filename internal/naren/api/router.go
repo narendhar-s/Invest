@@ -45,6 +45,9 @@ func Mount(
 	// challenge's Live mode to place REAL Zerodha orders (default false).
 	if kiteSvc != nil {
 		InitChallenge(repo.DB(), kiteSvc.client, kiteSvc.ticker, logger, cfg.Kite.LiveTradingEnabled)
+		// Telegram remote-control bot (allowlisted chats only). Safe to call when
+		// disabled — it no-ops. Binds to the challenge services just initialised.
+		StartTelegram(cfg.Telegram, logger)
 	}
 
 	h := NewHandler(repo, engine, cfg, newsMonitor)
@@ -212,6 +215,7 @@ func Mount(
 			ch.POST("/enter", h.ChallengeEnter)
 			ch.POST("/exit", h.ChallengeExit)
 			ch.POST("/snapshot", h.ChallengeSnapshot)
+			ch.POST("/backtest", h.ChallengeBacktest)
 			ch.GET("/trades", h.ChallengeTrades)
 			ch.GET("/daily", h.ChallengeDaily)
 			ch.GET("/expiry-breakdown", h.ChallengeExpiryBreakdown)
