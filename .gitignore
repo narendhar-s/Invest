@@ -15,7 +15,7 @@ frontend/.vite/
 frontend-naren/node_modules/
 frontend-naren/dist/
 frontend-naren/.vite/
-frontend-naren/package-lock.json
+# package-lock.json must be committed so `npm ci` works in the Docker build
 
 # Shared Zerodha Kite token (written at runtime, day-scoped)
 kite_token.json
@@ -32,4 +32,3 @@ Thumbs.db
 # Logs
 *.log
 logs/
-frontend/package-lock.json
