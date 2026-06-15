@@ -706,7 +706,7 @@ func (h *Handler) ZerodhaCallback(c *gin.Context) {
 	reqToken := c.Query("request_token")
 	status   := c.Query("status")
 
-	frontendBase := "http://localhost:5173"
+	frontendBase := "http://localhost:5173/naren"
 
 	if status != "success" || reqToken == "" {
 		c.Redirect(http.StatusFound, frontendBase+"?zerodha=error&msg=login_cancelled")

@@ -44,6 +44,12 @@ type ChallengeService struct {
 	optionPriceHistory []float64 // ring buffer of last 60 option prices (sparkline)
 	liveSpot           float64   // latest NIFTY spot price from ticker
 
+	// Dynamic SL state (paper trades only)
+	// entrySLAmt: effective SL in ₹, computed at entry as min(day-profit SL, algo SL).
+	// peakPnL:    highest unrealised P&L seen for the current open trade (trailing SL).
+	entrySLAmt float64
+	peakPnL    float64
+
 	lastSignal     *options.Recommendation
 	lastChain      *kite.ChainSnapshot
 	lastChainFetch time.Time
@@ -270,6 +276,61 @@ func signalAligned(open *storage.ChallengeTrade, sig *options.Recommendation) bo
 	return sig.Direction == "BEARISH"
 }
 
+// computeEffectiveSL returns the stop-loss amount (₹) to use for a new PAPER trade:
+//
+//  1. If this is the first trade of the calendar day, look back up to 5 trading
+//     days to find the most recent day with a positive realized P&L, and use that
+//     as the SL ("protect yesterday's gains").
+//  2. Otherwise use today's cumulative realized P&L so far as the SL
+//     ("never give back more than what you've already made today").
+//  3. Take the lesser of that profit-based SL and the algo's fixed RiskPerTrade.
+//     If there is no prior profit to protect, fall back to RiskPerTrade.
+func (cs *ChallengeService) computeEffectiveSL(active *storage.ChallengeConfig, entryTime time.Time) float64 {
+	loc      := ist()
+	dayStart := time.Date(entryTime.Year(), entryTime.Month(), entryTime.Day(), 0, 0, 0, 0, loc)
+
+	// How many of this challenge's trades closed today BEFORE entryTime?
+	var closedToday int64
+	cs.db.Model(&storage.ChallengeTrade{}).
+		Where("challenge_id = ? AND status = ? AND exit_time >= ? AND exit_time < ?",
+			active.ID, "CLOSED", dayStart, entryTime).
+		Count(&closedToday)
+
+	var profitSL float64
+
+	if closedToday == 0 {
+		// First trade of the day — walk back up to 5 days for the last profitable day.
+		for d := 1; d <= 5; d++ {
+			prevStart := dayStart.AddDate(0, 0, -d)
+			prevEnd   := dayStart.AddDate(0, 0, -(d - 1))
+			var pnl float64
+			cs.db.Model(&storage.ChallengeTrade{}).
+				Where("challenge_id = ? AND status = ? AND exit_time >= ? AND exit_time < ?",
+					active.ID, "CLOSED", prevStart, prevEnd).
+				Select("COALESCE(SUM(pnl), 0)").Scan(&pnl)
+			if pnl > 0 {
+				profitSL = pnl
+				break
+			}
+		}
+	} else {
+		// Intraday follow-up trade — protect today's realized P&L.
+		var pnl float64
+		cs.db.Model(&storage.ChallengeTrade{}).
+			Where("challenge_id = ? AND status = ? AND exit_time >= ? AND exit_time < ?",
+				active.ID, "CLOSED", dayStart, entryTime).
+			Select("COALESCE(SUM(pnl), 0)").Scan(&pnl)
+		if pnl > 0 {
+			profitSL = pnl
+		}
+	}
+
+	if profitSL > 0 {
+		return math.Min(profitSL, active.RiskPerTrade)
+	}
+	return active.RiskPerTrade
+}
+
 // liveExitReason decides whether to close a LIVE position this tick, returning a
 // human-readable reason or "" to hold. Priority:
 //  1. Stop-loss (always).
@@ -417,7 +478,11 @@ func (cs *ChallengeService) restore() {
 	var trade storage.ChallengeTrade
 	if err := cs.db.Where("challenge_id = ? AND status = ?", cs.active.ID, "OPEN").
 		First(&trade).Error; err == nil {
-		cs.openTrade = &trade
+		cs.openTrade  = &trade
+		// Recompute the effective SL from the trade's original entry time so the
+		// trailing-SL logic stays consistent across server restarts.
+		cs.entrySLAmt = cs.computeEffectiveSL(cs.active, trade.EntryTime)
+		cs.peakPnL    = 0
 		// Re-subscribe the option token to the WebSocket ticker after restart.
 		// This runs in a goroutine because the ticker may not be started yet.
 		go func() {
@@ -753,10 +818,16 @@ func (cs *ChallengeService) enterTrade(
 		optToken = uint32(optInstrument.InstrumentToken)
 	}
 
+	// Compute the effective SL before taking the lock (DB queries inside).
+	// This is the lesser of the day's realized profit and the algo's fixed risk.
+	slAmt := cs.computeEffectiveSL(cfg, now)
+
 	cs.mu.Lock()
-	cs.openTrade = trade
-	cs.openToken = optToken
-	cs.livePnL   = 0
+	cs.openTrade  = trade
+	cs.openToken  = optToken
+	cs.livePnL    = 0
+	cs.entrySLAmt = slAmt
+	cs.peakPnL    = 0
 	cs.mu.Unlock()
 
 	// Subscribe option token to ticker so onTick() fires on every price change
@@ -812,7 +883,7 @@ func (cs *ChallengeService) onTick(t kite.Tick) {
 
 	pnl := (ltp - open.EntryPremium) * qty
 
-	// Update in-memory live state: P&L, current price, and sparkline history
+	// Update in-memory live state: P&L, current price, sparkline, and peak P&L
 	cs.mu.Lock()
 	cs.livePnL         = round2p(pnl)
 	cs.liveOptionPrice = ltp
@@ -820,11 +891,16 @@ func (cs *ChallengeService) onTick(t kite.Tick) {
 	if len(cs.optionPriceHistory) > 60 {
 		cs.optionPriceHistory = cs.optionPriceHistory[1:]
 	}
+	if pnl > cs.peakPnL {
+		cs.peakPnL = pnl
+	}
 	cs.mu.Unlock()
 
 	// ── Exit decision ─────────────────────────────────────────────────────
 	cs.mu.RLock()
-	liveOn := cs.liveEnabled && cs.liveAllowed
+	liveOn  := cs.liveEnabled && cs.liveAllowed
+	slAmt   := cs.entrySLAmt
+	peakPnL := cs.peakPnL
 	cs.mu.RUnlock()
 
 	// LIVE positions use the confidence/signal-aware exit logic (SL → signal
@@ -836,10 +912,12 @@ func (cs *ChallengeService) onTick(t kite.Tick) {
 		return
 	}
 
-	// PAPER positions: fixed SL / target, unchanged.
-	riskAmt   := active.RiskPerTrade
+	// PAPER positions: dynamic profit-based SL + trailing SL when in profit.
+	if slAmt <= 0 {
+		slAmt = active.RiskPerTrade // safety fallback
+	}
 	rewardAmt := active.TargetPerTrade
-	riskPU    := riskAmt / qty
+	slPU      := slAmt / qty
 	rewardPU  := rewardAmt / qty
 
 	var reason string
@@ -848,9 +926,20 @@ func (cs *ChallengeService) onTick(t kite.Tick) {
 	case pnl >= rewardAmt:
 		reason   = fmt.Sprintf("Target +₹%.0f (RR 1:%.1f) [WebSocket]", rewardAmt, open.RR)
 		exitPrem = open.EntryPremium + rewardPU
-	case pnl <= -riskAmt:
-		reason   = fmt.Sprintf("Stop-loss -₹%.0f [WebSocket]", riskAmt)
-		exitPrem = math.Max(0, open.EntryPremium - riskPU)
+	case pnl <= -slAmt:
+		reason   = fmt.Sprintf("Stop-loss -₹%.0f [WebSocket]", slAmt)
+		exitPrem = math.Max(0, open.EntryPremium-slPU)
+	default:
+		// Trailing SL: once the position has returned ≥ 1× the effective SL in
+		// profit (i.e. peakPnL > slAmt), trail by the same SL amount from the
+		// peak.  This is a 1:1 trailing stop — we give back at most 1R from the
+		// best level reached, equivalent to moving the SL to breakeven once 1R
+		// is in the bag, then to +1R once 2R is in the bag, and so on.
+		trailLevel := peakPnL - slAmt
+		if pnl > 0 && trailLevel > 0 && pnl <= trailLevel {
+			reason   = fmt.Sprintf("Trailing SL locked +₹%.0f [WebSocket]", trailLevel)
+			exitPrem = round2p(open.EntryPremium + trailLevel/qty)
+		}
 	}
 	if reason != "" {
 		cs.closeTradeWith(open, ltp, exitPrem, pnl, reason)
@@ -868,10 +957,8 @@ func (cs *ChallengeService) manageOpenTrade(t *storage.ChallengeTrade) {
 	cs.mu.RUnlock()
 	if hasTicker || active == nil { return }
 
-	riskAmt   := active.RiskPerTrade
 	rewardAmt := active.TargetPerTrade
 	qty       := float64(t.Qty)
-	riskPU    := riskAmt / qty
 	rewardPU  := rewardAmt / qty
 
 	curLTP, _, err := cs.kc.RealOptionLTP(t.Expiry, t.Strike, t.OptionType)
@@ -883,9 +970,19 @@ func (cs *ChallengeService) manageOpenTrade(t *storage.ChallengeTrade) {
 	if curLTP <= 0 { return }
 
 	pnl := (curLTP - t.EntryPremium) * qty
-	cs.mu.Lock(); cs.livePnL = round2p(pnl); cs.mu.Unlock()
 
-	cs.mu.RLock(); liveOn := cs.liveEnabled && cs.liveAllowed; cs.mu.RUnlock()
+	cs.mu.Lock()
+	cs.livePnL = round2p(pnl)
+	if pnl > cs.peakPnL {
+		cs.peakPnL = pnl
+	}
+	cs.mu.Unlock()
+
+	cs.mu.RLock()
+	liveOn  := cs.liveEnabled && cs.liveAllowed
+	slAmt   := cs.entrySLAmt
+	peakPnL := cs.peakPnL
+	cs.mu.RUnlock()
 
 	// LIVE positions use the confidence/signal-aware exit logic.
 	if t.Live && liveOn {
@@ -895,17 +992,31 @@ func (cs *ChallengeService) manageOpenTrade(t *storage.ChallengeTrade) {
 		return
 	}
 
-	// PAPER positions: fixed SL / target, unchanged.
-	var reason string; var exitPrem float64
+	// PAPER positions: dynamic profit-based SL + trailing SL when in profit.
+	if slAmt <= 0 {
+		slAmt = active.RiskPerTrade // safety fallback
+	}
+	slPU := slAmt / qty
+
+	var reason string
+	var exitPrem float64
 	switch {
 	case pnl >= rewardAmt:
-		reason = fmt.Sprintf("Target +₹%.0f (RR 1:%.1f)", rewardAmt, t.RR)
+		reason   = fmt.Sprintf("Target +₹%.0f (RR 1:%.1f)", rewardAmt, t.RR)
 		exitPrem = t.EntryPremium + rewardPU
-	case pnl <= -riskAmt:
-		reason = fmt.Sprintf("Stop-loss -₹%.0f", riskAmt)
-		exitPrem = math.Max(0, t.EntryPremium - riskPU)
+	case pnl <= -slAmt:
+		reason   = fmt.Sprintf("Stop-loss -₹%.0f", slAmt)
+		exitPrem = math.Max(0, t.EntryPremium-slPU)
+	default:
+		trailLevel := peakPnL - slAmt
+		if pnl > 0 && trailLevel > 0 && pnl <= trailLevel {
+			reason   = fmt.Sprintf("Trailing SL locked +₹%.0f", trailLevel)
+			exitPrem = round2p(t.EntryPremium + trailLevel/qty)
+		}
 	}
-	if reason != "" { cs.closeTradeWith(t, curLTP, exitPrem, pnl, reason) }
+	if reason != "" {
+		cs.closeTradeWith(t, curLTP, exitPrem, pnl, reason)
+	}
 }
 
 func (cs *ChallengeService) currentSpot() float64 {
@@ -990,6 +1101,8 @@ func (cs *ChallengeService) closeTradeWith(t *storage.ChallengeTrade, rawLTP, ex
 	cs.livePnL             = 0
 	cs.liveOptionPrice     = 0
 	cs.optionPriceHistory  = nil
+	cs.peakPnL             = 0
+	cs.entrySLAmt          = 0
 	cs.mu.Unlock()
 
 	// Revert ticker subscription to NIFTY-only (drop the closed option token)
@@ -1384,11 +1497,18 @@ type LiveOptionState struct {
 	PremiumChange  float64   `json:"premium_change"`
 	PnL            float64   `json:"pnl"`
 	PnLPct         float64   `json:"pnl_pct"` // % of risk
-	SLPremium      float64   `json:"sl_premium"`
+	SLPremium      float64   `json:"sl_premium"`       // dynamic SL premium (updates as trailing SL moves)
 	TargetPremium  float64   `json:"target_premium"`
 	PriceHistory   []float64 `json:"price_history"` // sparkline
 	EntrySpot      float64   `json:"entry_spot"`
 	DTE            int       `json:"dte"`
+
+	// Dynamic SL fields
+	EffectiveSLAmt    float64 `json:"effective_sl_amt"`    // ₹ SL used (min of day-profit SL and algo SL)
+	PeakPnL           float64 `json:"peak_pnl"`            // highest unrealised P&L seen so far
+	TrailingSLActive  bool    `json:"trailing_sl_active"`  // true once trailing SL is engaged
+	TrailingSLLevel   float64 `json:"trailing_sl_level"`   // P&L (₹) at which trailing SL fires
+	TrailingSLPremium float64 `json:"trailing_sl_premium"` // option premium at which trailing SL fires
 }
 
 // FilterState records whether each of the 3 entry gates was passed.
@@ -1484,35 +1604,63 @@ func (cs *ChallengeService) LiveState() LiveSnapshot {
 
 		expiry, _ := time.Parse("2006-01-02", open.Expiry)
 		dte       := options.ActualDTE(time.Now(), expiry)
-		riskAmt   := 0.0
 		targetAmt := 0.0
 		if active != nil {
-			riskAmt   = active.RiskPerTrade
 			targetAmt = active.TargetPerTrade
 		}
-		qty    := float64(open.Qty)
-		riskPU := riskAmt / qty
-		targPU := targetAmt / qty
+		qty := float64(open.Qty)
+
+		// Read the in-memory dynamic SL state (set at entry, updated each tick).
+		cs.mu.RLock()
+		slAmt   := cs.entrySLAmt
+		peakPnL := cs.peakPnL
+		cs.mu.RUnlock()
+		if slAmt <= 0 && active != nil {
+			slAmt = active.RiskPerTrade // fallback if not yet set (e.g. before first tick)
+		}
+
+		slPU     := slAmt / qty
+		targPU   := targetAmt / qty
+
+		// Trailing SL becomes active once peak profit ≥ 1× the effective SL.
+		trailLevel    := peakPnL - slAmt
+		trailActive   := peakPnL > slAmt
+		trailPnLLevel := math.Max(0, trailLevel)
+		trailPremium  := round2p(open.EntryPremium + trailPnLLevel/qty)
+
+		// SLPremium: if trailing is active, show the trailing SL premium;
+		// otherwise show the original entry-based SL premium.
+		slPremium := round2p(math.Max(0, open.EntryPremium-slPU))
+		if trailActive {
+			slPremium = trailPremium
+		}
 
 		premChange := livePrice - open.EntryPremium
 		pnlPct     := 0.0
-		if riskAmt > 0 { pnlPct = livePnL / riskAmt * 100 }
+		if slAmt > 0 {
+			pnlPct = livePnL / slAmt * 100
+		}
 
 		snap.OpenOption = &LiveOptionState{
-			TradingSymbol:  open.TradingSymbol,
-			Strike:         open.Strike,
-			OptionType:     open.OptionType,
-			Expiry:         open.Expiry,
-			EntryPremium:   open.EntryPremium,
-			CurrentPremium: livePrice,
-			PremiumChange:  round2p(premChange),
-			PnL:            livePnL,
-			PnLPct:         round2p(pnlPct),
-			SLPremium:      round2p(math.Max(0, open.EntryPremium - riskPU)),
-			TargetPremium:  round2p(open.EntryPremium + targPU),
-			PriceHistory:   history,
-			EntrySpot:      open.EntrySpot,
-			DTE:            dte,
+			TradingSymbol:     open.TradingSymbol,
+			Strike:            open.Strike,
+			OptionType:        open.OptionType,
+			Expiry:            open.Expiry,
+			EntryPremium:      open.EntryPremium,
+			CurrentPremium:    livePrice,
+			PremiumChange:     round2p(premChange),
+			PnL:               livePnL,
+			PnLPct:            round2p(pnlPct),
+			SLPremium:         slPremium,
+			TargetPremium:     round2p(open.EntryPremium + targPU),
+			PriceHistory:      history,
+			EntrySpot:         open.EntrySpot,
+			DTE:               dte,
+			EffectiveSLAmt:    round2p(slAmt),
+			PeakPnL:           round2p(peakPnL),
+			TrailingSLActive:  trailActive,
+			TrailingSLLevel:   round2p(trailPnLLevel),
+			TrailingSLPremium: trailPremium,
 		}
 		// Include full DB record so frontend can show entry signal basis, indicators, PCR at entry
 		snap.OpenTrade = open

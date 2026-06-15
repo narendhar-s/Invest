@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import LoginGate from './components/LoginGate'
 import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
 import ScalpingTerminal from './pages/ScalpingTerminal'
@@ -33,6 +34,7 @@ import StrategyCompare from './pages/StrategyCompare'
 export default function App() {
   return (
     <BrowserRouter basename="/naren">
+      <LoginGate>
       <div className="min-h-screen bg-dark-900 text-slate-200">
         <Navbar />
         <main className="pt-14">
@@ -70,6 +72,7 @@ export default function App() {
           </Routes>
         </main>
       </div>
+      </LoginGate>
     </BrowserRouter>
   )
 }

@@ -81,6 +81,14 @@ interface LiveSnap {
     pnl?: number
     pnl_pct?: number
     premium_change?: number
+    sl_premium?: number
+    target_premium?: number
+    // Dynamic SL fields
+    effective_sl_amt?: number
+    peak_pnl?: number
+    trailing_sl_active?: boolean
+    trailing_sl_level?: number
+    trailing_sl_premium?: number
   }
 }
 
@@ -169,11 +177,30 @@ function StatsRow({ s }: { s: ChallengeStatus }) {
 
 // ─── Open position ────────────────────────────────────────────────────────────
 
-function OpenPosition({ t, pnl, onExit, current, pnlPct, liveOn }: { t: ChallengeTrade; pnl: number; onExit: () => void; current?: number; pnlPct?: number; liveOn?: boolean }) {
-  const risk = t.qty * (t.entry_premium - (t.entry_premium - (t.entry_premium * 0.33)))
+function OpenPosition({ t, pnl, onExit, current, pnlPct, liveOn, snap }: {
+  t: ChallengeTrade; pnl: number; onExit: () => void
+  current?: number; pnlPct?: number; liveOn?: boolean
+  snap?: LiveSnap['open_option']
+}) {
+  const eff       = snap?.effective_sl_amt ?? 0
+  const peak      = snap?.peak_pnl ?? 0
+  const trailOn   = snap?.trailing_sl_active ?? false
+  const trailLvl  = snap?.trailing_sl_level ?? 0
+  const trailPrem = snap?.trailing_sl_premium ?? 0
+  const slPremium = snap?.sl_premium ?? 0
+  const tgtPrem   = snap?.target_premium ?? 0
+
+  // Progress bar: 0 = at SL, 1 = at target
+  const slAmt  = eff > 0 ? eff : 5000
+  const tgtAmt = t.qty > 0 && tgtPrem > 0 ? (tgtPrem - t.entry_premium) * t.qty : 0
+  const range  = slAmt + (tgtAmt > 0 ? tgtAmt : slAmt)
+  const barPct = Math.min(100, Math.max(0, ((pnl + slAmt) / range) * 100))
+  const barCol = trailOn ? 'bg-blue-500' : pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'
+
   return (
-    <div className={`rounded-xl border p-5 ${bgpc(pnl)}`}>
-      <div className="flex items-start justify-between mb-3">
+    <div className={`rounded-xl border p-5 space-y-4 ${bgpc(pnl)}`}>
+      {/* ── Header ── */}
+      <div className="flex items-start justify-between">
         <div>
           <p className="text-xs text-slate-400 mb-1 flex items-center gap-1.5">
             Open Position — Day {t.day_number}
@@ -197,6 +224,69 @@ function OpenPosition({ t, pnl, onExit, current, pnlPct, liveOn }: { t: Challeng
           </button>
         </div>
       </div>
+
+      {/* ── Dynamic SL panel ── */}
+      <div className="bg-slate-900/60 rounded-xl border border-slate-700/60 p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Stop-Loss Regime</p>
+          {trailOn
+            ? <span className="flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/30 rounded-full px-2 py-0.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                Trailing SL active
+              </span>
+            : <span className="text-[10px] text-slate-500 bg-slate-800 border border-slate-700 rounded-full px-2 py-0.5">Fixed SL</span>
+          }
+        </div>
+
+        {/* SL / target numbers */}
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-center">
+            <p className="text-red-300 text-[10px] mb-0.5">{trailOn ? 'Trailing SL' : 'Effective SL'}</p>
+            <p className="text-red-200 font-bold">-₹{fmt(slAmt)}</p>
+            {slPremium > 0 && <p className="text-red-400/70 text-[10px] mt-0.5">prem ₹{slPremium.toFixed(1)}</p>}
+          </div>
+          <div className="bg-slate-800/80 border border-slate-700/50 rounded-lg p-2 text-center">
+            <p className="text-slate-400 text-[10px] mb-0.5">Peak P&L</p>
+            <p className={`font-bold ${pc(peak)}`}>{peak > 0 ? '+' : ''}{peak === 0 ? '—' : `₹${fmt(peak)}`}</p>
+            {trailOn && trailLvl > 0 && (
+              <p className="text-blue-400 text-[10px] mt-0.5">floor +₹{fmt(trailLvl)}</p>
+            )}
+          </div>
+          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2 text-center">
+            <p className="text-emerald-300 text-[10px] mb-0.5">Target</p>
+            <p className="text-emerald-200 font-bold">+₹{fmt(tgtAmt > 0 ? tgtAmt : 0)}</p>
+            {tgtPrem > 0 && <p className="text-emerald-400/70 text-[10px] mt-0.5">prem ₹{tgtPrem.toFixed(1)}</p>}
+          </div>
+        </div>
+
+        {/* P&L progress bar */}
+        <div>
+          <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+            <div className={`h-full rounded-full transition-all duration-500 ${barCol}`} style={{ width: `${barPct}%` }} />
+          </div>
+          <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
+            <span>SL -₹{fmt(slAmt)}</span>
+            <span>B/E</span>
+            <span>Target +₹{fmt(tgtAmt > 0 ? tgtAmt : slAmt)}</span>
+          </div>
+        </div>
+
+        {/* Trailing SL explanation when active */}
+        {trailOn && (
+          <div className="bg-blue-500/8 border border-blue-500/20 rounded-lg p-2 text-[10px] text-blue-300">
+            Peak ₹{peak.toFixed(0)} reached — trailing SL locked at +₹{trailLvl.toFixed(0)}
+            {trailPrem > 0 && ` (prem ₹${trailPrem.toFixed(1)})`}.
+            Position exits if P&L falls back to this level.
+          </div>
+        )}
+
+        {/* SL source note */}
+        <p className="text-[10px] text-slate-600">
+          SL = min(today's profit, algo risk per trade){trailOn ? ' · trailing at 1:1 from peak' : ' · trailing activates once peak ≥ 1×SL'}
+        </p>
+      </div>
+
+      {/* ── Entry details grid ── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
         {[
           ['Entry Premium', `₹${t.entry_premium?.toFixed(1)}`],
@@ -215,7 +305,7 @@ function OpenPosition({ t, pnl, onExit, current, pnlPct, liveOn }: { t: Challeng
         ))}
       </div>
       {t.signal_basis?.length > 0 && (
-        <div className="mt-3 bg-slate-800/40 rounded-lg p-3">
+        <div className="bg-slate-800/40 rounded-lg p-3">
           <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide mb-1">Signal Basis</p>
           {t.signal_basis.map((r, i) => (
             <p key={i} className="text-xs text-slate-400 flex gap-2">
@@ -980,6 +1070,7 @@ export default function ChallengeDashboard() {
               pnlPct={live?.open_option?.pnl_pct}
               current={live?.open_option?.current_premium}
               liveOn={!!live?.ticker_live}
+              snap={live?.open_option}
               onExit={onExit} />
           )}
 
