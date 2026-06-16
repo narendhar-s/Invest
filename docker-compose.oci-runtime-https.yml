@@ -1,0 +1,74 @@
+# Runtime stack WITH HTTPS for a low-memory VM:
+#   Postgres + prebuilt app (Dockerfile.runtime) + Caddy (auto Let's Encrypt TLS).
+# No compilation on the VM. Needs a DNS hostname pointing at the VM's public IP
+# (Let's Encrypt can't issue for a bare IP). A free hostname works:
+#   - sslip.io  (zero signup):   DOMAIN=140-245-223-10.sslip.io
+#   - DuckDNS   (free signup):   DOMAIN=yourname.duckdns.org
+#
+# Build artifacts on your Mac (build-local.sh), push, then on the VM:
+#   export DOMAIN=140-245-223-10.sslip.io
+#   export POSTGRES_PASSWORD='a-strong-password'
+#   COMPOSE_FILE=docker-compose.oci-runtime-https.yml ./deploy-oci.sh
+#
+# Open BOTH 80 and 443 (Security List + firewalld) — Caddy needs 80 for the
+# ACME challenge and serves on 443.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockwise_postgres
+    environment:
+      POSTGRES_USER: stockwise
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      POSTGRES_DB: stockwise_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockwise -d stockwise_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    container_name: stockwise_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: stockwise
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      DATABASE_NAME: stockwise_db
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./config.naren.yaml:/app/config.naren.yaml:ro
+      - ./kite_token.json:/app/kite_token.json
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: stockwise_caddy
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your hostname, e.g. 140-245-223-10.sslip.io}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

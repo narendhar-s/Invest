@@ -110,9 +110,11 @@ zerodha:
   api_key: "rhwcpeoekvr0j875"      # override via env ZERODHA_API_KEY
   api_secret: "pvcu5duid5ukd9yt3xhoa2uf5wkipvp8"   # override via env ZERODHA_API_SECRET
   # Must EXACTLY match the "Redirect URL" registered for this app in the Kite
-  # developer console (https://developers.kite.trade/apps). For the OCI-hosted
-  # deployment served on http://140.245.223.10/ the public callback is below.
-  redirect_url: "http://140.245.223.10/api/v1/zerodha/callback"
+  # developer console (https://developers.kite.trade/apps). Kite requires HTTPS
+  # for non-localhost redirects, so we use a free sslip.io hostname (resolves to
+  # the VM's public IP) + a Let's Encrypt cert via Caddy. Update the IP-encoded
+  # host if the VM's public IP changes (reserve a static IP to avoid that).
+  redirect_url: "https://140-245-223-10.sslip.io/api/v1/zerodha/callback"
   # Master kill-switch for placing REAL orders from the web trade ticket.
   # Set false to block all live order placement (the /zerodha/order endpoint
   # returns 403). The frontend also hides the place-order button when false.
