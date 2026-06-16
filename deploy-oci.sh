@@ -19,15 +19,18 @@ export POSTGRES_PASSWORD
 
 cd "$(dirname "$0")"
 
-# ── Ensure some swap exists so the Go+frontend build doesn't get OOM-killed ──
-if [ "$(swapon --show --noheadings | wc -l)" -eq 0 ]; then
-  echo "→ No swap detected — adding 4G swapfile (build is memory-heavy)..."
+# ── Ensure a 4G swapfile exists so the Go+frontend build isn't OOM-killed ────
+# Guarded so re-running the script doesn't recreate swap or duplicate the fstab
+# line; the commands inside are exactly the manual swap setup.
+if ! sudo swapon --show | grep -q '/swapfile'; then
+  echo "→ Creating 4G swapfile (build is memory-heavy)..."
   sudo fallocate -l 4G /swapfile
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
   sudo swapon /swapfile
-  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 fi
+free -h        # confirm swap shows up
 
 # ── Pull latest code ─────────────────────────────────────────────────────────
 echo "→ Pulling latest from origin/$BRANCH..."
