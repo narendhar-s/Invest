@@ -259,8 +259,8 @@ export default function Watchlist() {
               <tr>
                 <th className="text-left px-4 py-3">Symbol</th>
                 <th className="text-left px-4 py-3">Market</th>
-                <th className="text-left px-4 py-3">Note</th>
-                <th className="text-left px-4 py-3">Added</th>
+                <th className="text-left px-4 py-3 hidden sm:table-cell">Note</th>
+                <th className="text-left px-4 py-3 hidden md:table-cell">Added</th>
                 <th className="text-right px-4 py-3 w-20">Actions</th>
               </tr>
             </thead>
@@ -282,8 +282,8 @@ export default function Watchlist() {
                       {it.market}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-300">{it.note ?? <span className="text-slate-600">—</span>}</td>
-                  <td className="px-4 py-3 text-slate-500 text-xs">
+                  <td className="px-4 py-3 text-slate-300 hidden sm:table-cell">{it.note ?? <span className="text-slate-600">—</span>}</td>
+                  <td className="px-4 py-3 text-slate-500 text-xs hidden md:table-cell">
                     {new Date(it.addedAt).toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-right">

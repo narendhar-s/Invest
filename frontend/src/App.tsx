@@ -11,6 +11,7 @@ import LongTermSIP from './pages/LongTermSIP'
 import Watchlist from './pages/Watchlist'
 import LiveTrading from './pages/LiveTrading'
 import OIPulse from './pages/OIPulse'
+import Trade from './pages/Trade'
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/stock/:symbol" element={<StockDetail />} />
             <Route path="/backtest" element={<BacktestDashboard />} />
             <Route path="/longterm-sip" element={<LongTermSIP />} />
+            <Route path="/trade" element={<Trade />} />
             <Route path="/live" element={<LiveTrading />} />
             <Route path="/oi-pulse" element={<OIPulse />} />
             <Route path="*" element={<Navigate to="/" replace />} />

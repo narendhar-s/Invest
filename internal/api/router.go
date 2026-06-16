@@ -88,6 +88,8 @@ func NewRouter(repo *storage.Repository, engine *strategy.Engine, fetcher *data.
 		v1.POST("/zerodha/logout",   h.ZerodhaLogout)
 		v1.GET("/zerodha/quotes",    h.ZerodhaQuotes)
 		v1.GET("/zerodha/stream",    h.ZerodhaStream)
+		v1.GET("/zerodha/ltp",       h.ZerodhaLTP)        // LTP preview for the trade ticket
+		v1.POST("/zerodha/order",    h.ZerodhaPlaceOrder) // places a REAL order (gated)
 
 		// Live strategy trading
 		v1.GET("/live/strategies", h.ListStrategies)

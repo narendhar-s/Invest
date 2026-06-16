@@ -135,7 +135,8 @@ kite:
   enabled: true
   api_key: "rhwcpeoekvr0j875"
   api_secret: "pvcu5duid5ukd9yt3xhoa2uf5wkipvp8"
-  redirect_url: "http://localhost:8080/api/v1/zerodha/callback"
+  # Must match the Redirect URL registered in the Kite developer console.
+  redirect_url: "http://140.245.223.10/api/v1/zerodha/callback"
   # ⚠️ MASTER KILL-SWITCH FOR REAL ORDERS. Leave false to keep everything paper.
   # Set true ONLY when you intend to let the challenge's Live mode place REAL
   # buy/sell orders on your Zerodha account. The per-challenge Live toggle in the

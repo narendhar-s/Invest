@@ -861,8 +861,8 @@ export default function Portfolio() {
               <SectorBreakdown sectors={sector_breakdown} market="US" />
             </div>
           )}
-          <div className="bg-dark-700 border border-slate-800/60 rounded-xl overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="bg-dark-700 border border-slate-800/60 rounded-xl overflow-x-auto">
+            <table className="w-full text-sm min-w-[720px]">
               <thead>
                 <tr className="text-xs text-slate-500 border-b border-slate-800/60">
                   {['Sector', 'Market', 'Stocks', 'Invested', 'Current Value', 'P&L %', 'Allocation %', 'Flag'].map(h => (

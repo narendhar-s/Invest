@@ -481,6 +481,47 @@ export interface ZerodhaStatus {
   connected: boolean
   streaming: boolean
   token_date: string
+  live_trading?: boolean
+}
+
+// ─── Manual trading (real Zerodha orders) ──────────────────────────────────────
+export interface OrderTicket {
+  symbol: string                       // RELIANCE.NS or option tradingsymbol (NIFTY25JUN24500CE)
+  exchange: 'NSE' | 'BSE' | 'NFO' | 'BFO'
+  transaction_type: 'BUY' | 'SELL'
+  quantity: number
+  product: 'MIS' | 'CNC' | 'NRML'
+  order_type: 'MARKET' | 'LIMIT'
+  price?: number
+}
+
+export interface OrderResult {
+  order_id: string
+  status: string
+  symbol: string
+  exchange: string
+  transaction_type: string
+  quantity: number
+  product: string
+  order_type: string
+}
+
+export interface LtpResult {
+  symbol: string
+  exchange: string
+  last_price: number
+  change: number
+  change_pct: number
+}
+
+export const getZerodhaLtp = async (symbol: string, exchange: string): Promise<LtpResult> => {
+  const { data } = await client.get('/zerodha/ltp', { params: { symbol, exchange } })
+  return data
+}
+
+export const placeZerodhaOrder = async (order: OrderTicket): Promise<OrderResult> => {
+  const { data } = await client.post('/zerodha/order', order)
+  return data
 }
 
 export interface ZerodhaQuote {

@@ -789,10 +789,11 @@ func (h *Handler) ZerodhaStatus(c *gin.Context) {
 	tokenDate, _ := h.repo.GetSetting("zerodha_token_date")
 
 	c.JSON(http.StatusOK, gin.H{
-		"configured": configured,
-		"connected":  connected,
-		"streaming":  streaming,
-		"token_date": tokenDate,
+		"configured":   configured,
+		"connected":    connected,
+		"streaming":    streaming,
+		"token_date":   tokenDate,
+		"live_trading": h.cfg.Zerodha.LiveTradingEnabled,
 	})
 }
 
@@ -816,6 +817,147 @@ func (h *Handler) ZerodhaQuotes(c *gin.Context) {
 	}
 	quotes := h.kiteStream.GetAllQuotes()
 	c.JSON(http.StatusOK, gin.H{"quotes": quotes, "count": len(quotes), "source": "zerodha_live"})
+}
+
+// placeOrderRequest is the JSON body accepted by ZerodhaPlaceOrder.
+type placeOrderRequest struct {
+	Symbol          string  `json:"symbol"`           // RELIANCE.NS (equity) or option tradingsymbol e.g. NIFTY25JUN24500CE
+	Exchange        string  `json:"exchange"`         // NSE / BSE / NFO / BFO (default NSE)
+	TransactionType string  `json:"transaction_type"` // BUY / SELL
+	Quantity        int     `json:"quantity"`         // shares (equity) or lots × lot_size (options)
+	Product         string  `json:"product"`          // MIS / CNC / NRML (default MIS)
+	OrderType       string  `json:"order_type"`       // MARKET / LIMIT (default MARKET)
+	Price           float64 `json:"price"`            // required for LIMIT
+}
+
+// ZerodhaPlaceOrder places a REAL order on the user's Zerodha account via Kite.
+// Guarded by the server-side live_trading_enabled kill-switch AND an active
+// Zerodha session. Supports equity (NSE/BSE) and options (NFO/BFO).
+func (h *Handler) ZerodhaPlaceOrder(c *gin.Context) {
+	// 1. Server-side master kill-switch.
+	if !h.cfg.Zerodha.LiveTradingEnabled {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "live trading is disabled on the server (set zerodha.live_trading_enabled: true in config.yaml)",
+		})
+		return
+	}
+	// 2. Must have an authenticated Kite session.
+	if h.kite == nil || !h.kite.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Zerodha not connected — log in first"})
+		return
+	}
+
+	var req placeOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+
+	// 3. Validate.
+	req.Symbol = strings.TrimSpace(req.Symbol)
+	req.TransactionType = strings.ToUpper(strings.TrimSpace(req.TransactionType))
+	req.Exchange = strings.ToUpper(strings.TrimSpace(req.Exchange))
+	req.Product = strings.ToUpper(strings.TrimSpace(req.Product))
+	req.OrderType = strings.ToUpper(strings.TrimSpace(req.OrderType))
+
+	if req.Symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+	if req.TransactionType != "BUY" && req.TransactionType != "SELL" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "transaction_type must be BUY or SELL"})
+		return
+	}
+	if req.Quantity <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be greater than 0"})
+		return
+	}
+	if req.Exchange == "" {
+		req.Exchange = "NSE"
+	}
+	if req.Product == "" {
+		req.Product = "MIS"
+	}
+	if req.OrderType == "" {
+		req.OrderType = "MARKET"
+	}
+	if req.OrderType == "LIMIT" && req.Price <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price is required for LIMIT orders"})
+		return
+	}
+
+	orderID, err := h.kite.PlaceOrder(data.OrderRequest{
+		Symbol:          req.Symbol,
+		Exchange:        req.Exchange,
+		TransactionType: req.TransactionType,
+		Quantity:        req.Quantity,
+		Product:         req.Product,
+		OrderType:       req.OrderType,
+		Price:           req.Price,
+		Variety:         "regular",
+	})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"order_id":         orderID,
+		"status":           "placed",
+		"symbol":           req.Symbol,
+		"exchange":         req.Exchange,
+		"transaction_type": req.TransactionType,
+		"quantity":         req.Quantity,
+		"product":          req.Product,
+		"order_type":       req.OrderType,
+	})
+}
+
+// ZerodhaLTP returns the last traded price for a single instrument so the trade
+// ticket can preview the price before the user confirms. Query params:
+//
+//	?symbol=RELIANCE.NS&exchange=NSE         (equity)
+//	?symbol=NIFTY25JUN24500CE&exchange=NFO   (option tradingsymbol)
+func (h *Handler) ZerodhaLTP(c *gin.Context) {
+	if h.kite == nil || !h.kite.IsConnected() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Zerodha not connected"})
+		return
+	}
+	symbol := strings.TrimSpace(c.Query("symbol"))
+	exchange := strings.ToUpper(strings.TrimSpace(c.Query("exchange")))
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+	if exchange == "" {
+		exchange = "NSE"
+	}
+	// Build the Kite instrument key. Equity symbols carry Yahoo suffixes that
+	// must be stripped; option tradingsymbols are used verbatim.
+	trading := symbol
+	if exchange == "NSE" || exchange == "BSE" {
+		trading = strings.TrimSuffix(strings.TrimSuffix(symbol, ".NS"), ".BO")
+	}
+	inst := exchange + ":" + trading
+
+	quotes, err := h.kite.FetchLiveQuotes([]string{inst})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	// FetchLiveQuotes re-keys results by a Yahoo-style symbol; with a single
+	// instrument we can just take whatever it returned.
+	for _, q := range quotes {
+		c.JSON(http.StatusOK, gin.H{
+			"symbol":     symbol,
+			"exchange":   exchange,
+			"last_price": q.LastPrice,
+			"change":     q.Change,
+			"change_pct": q.ChangePct,
+		})
+		return
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "no quote for " + inst})
 }
 
 // ZerodhaStream is an SSE endpoint that pushes live quote updates every ~3 s.

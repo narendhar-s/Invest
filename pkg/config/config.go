@@ -94,6 +94,10 @@ type ZerodhaConfig struct {
 	APIKey      string `mapstructure:"api_key"`
 	APISecret   string `mapstructure:"api_secret"`
 	RedirectURL string `mapstructure:"redirect_url"`
+	// LiveTradingEnabled is the server-side master kill-switch for placing REAL
+	// orders from the web trade ticket. When false, POST /api/v1/zerodha/order
+	// is rejected with 403 regardless of what the client sends.
+	LiveTradingEnabled bool `mapstructure:"live_trading_enabled"`
 }
 
 func Load(cfgFile string) (*Config, error) {
