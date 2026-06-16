@@ -52,6 +52,10 @@ echo "→ Status:"
 docker compose -f "$COMPOSE_FILE" ps
 
 echo ""
-echo "✓ Deployed. App: http://$(curl -s ifconfig.me 2>/dev/null || echo '<VM_IP>')/naren/challenge"
-echo "  Tailing app logs (Ctrl+C to stop)…"
-docker compose -f "$COMPOSE_FILE" logs -f app
+echo "→ Recent app logs:"
+docker compose -f "$COMPOSE_FILE" logs --tail=40 app
+
+IP="$(curl -s ifconfig.me 2>/dev/null || echo '<VM_IP>')"
+echo ""
+echo "✓ Deployed. App: http://${IP}/naren/challenge"
+echo "  Follow live logs with:  docker compose -f $COMPOSE_FILE logs -f app"
