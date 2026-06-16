@@ -1,0 +1,46 @@
+# Runtime stack for a low-memory VM: Postgres + the app from PRE-BUILT artifacts
+# (Dockerfile.runtime just copies them — no compilation on the VM).
+# Serves on port 80 by IP. Build the artifacts on your Mac first (build-local.sh),
+# push, then on the VM:  COMPOSE_FILE=docker-compose.oci-runtime.yml ./deploy-oci.sh
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stockwise_postgres
+    environment:
+      POSTGRES_USER: stockwise
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      POSTGRES_DB: stockwise_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockwise -d stockwise_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    container_name: stockwise_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: stockwise
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-stockwise123}
+      DATABASE_NAME: stockwise_db
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./config.naren.yaml:/app/config.naren.yaml:ro
+      - ./kite_token.json:/app/kite_token.json
+    ports:
+      - "80:8080"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

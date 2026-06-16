@@ -1,0 +1,21 @@
+# Runtime-only image — NO compilation. It just copies pre-built artifacts
+# (the linux/amd64 Go binary + both SPA dist folders) produced on your Mac by
+# build-local.sh. This lets a tiny 1 GB VM *run* the app without ever building
+# it (the Go + Vite builds are too heavy for a micro instance).
+#
+# Build artifacts must exist before `docker build`:
+#   bin/stockwise-linux-amd64
+#   frontend/dist
+#   frontend-naren/dist
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates tzdata
+ENV TZ=Asia/Kolkata
+WORKDIR /app
+
+COPY bin/stockwise-linux-amd64 ./stockwise
+RUN chmod +x ./stockwise
+COPY frontend/dist ./frontend/dist
+COPY frontend-naren/dist ./frontend-naren/dist
+
+EXPOSE 8080
+CMD ["./stockwise"]
