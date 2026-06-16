@@ -241,18 +241,28 @@ func SyncAccessToken(token string) bool {
 }
 
 // frontendURL builds a redirect URL that works whether the user is on the
-// production server (:8080) or the Vite dev server (:5173).
-// We detect the dev server by the Referer / Origin header; if absent we
-// default to a relative path so the browser stays on whatever host it's on.
+// production server (:8080) or the Vite dev server (:8081 / :5173).
+//
+// All naren SPA routes live under /naren, so we always prepend that prefix.
+// For dev, the OAuth callback arrives on :8080 (no useful Origin/Referer),
+// so KiteLogin sets a short-lived cookie with the real frontend host.
 func frontendURL(c *gin.Context, path string) string {
+	const prefix = "/naren"
+
+	// Cookie set by KiteLogin before the OAuth redirect (survives the round-trip).
+	if base, err := c.Cookie("naren_fe_base"); err == nil && base != "" {
+		return base + prefix + path
+	}
+	// Header-based detection works for non-OAuth requests (e.g. direct API calls).
 	origin := c.GetHeader("Origin")
 	referer := c.GetHeader("Referer")
 	for _, h := range []string{origin, referer} {
 		if strings.Contains(h, ":8081") || strings.Contains(h, ":5173") {
-			return "http://localhost:8081" + path
+			return "http://localhost:8081" + prefix + path
 		}
 	}
-	return path // relative → same host:port as the request
+	// Production: relative URL, same host as the backend.
+	return prefix + path
 }
 
 // ─── Auth endpoints ───────────────────────────────────────────────────────────
@@ -305,11 +315,20 @@ func (h *Handler) KiteAutoLogin(c *gin.Context) {
 }
 
 // KiteLogin redirects the browser to Kite's OAuth login page.
+// The originating frontend host is encoded in the OAuth state parameter so
+// that ZerodhaCallback (or KiteCallback) can redirect back to the right origin
+// after Kite auth completes — even when the registered callback URL is on a
+// different host (e.g. the OCI production server) than where login was initiated.
 func (h *Handler) KiteLogin(c *gin.Context) {
 	if !kiteReady(c) {
 		return
 	}
-	c.Redirect(http.StatusFound, kiteSvc.client.LoginURL())
+	stateBase := localhostOriginNaren(c)
+	loginURL := kiteSvc.client.LoginURL()
+	if stateBase != "" {
+		loginURL += "&state=" + url.QueryEscape(stateBase)
+	}
+	c.Redirect(http.StatusFound, loginURL)
 }
 
 // KiteCallback handles the OAuth redirect from Kite.
@@ -317,8 +336,8 @@ func (h *Handler) KiteLogin(c *gin.Context) {
 // Three error scenarios that previously caused the raw Kite JSON to appear:
 //  1. request_token used twice (page refresh on callback URL) → Kite rejects it.
 //     Fix: detect "already connected" and skip re-exchange.
-//  2. Redirect goes to :8080 but user is on :5173 dev server → different host.
-//     Fix: detect Referer and send back to the right port.
+//  2. Redirect goes to :8080 but user is on :8081 dev server → different host.
+//     Fix: carry originating host in OAuth state parameter (set by KiteLogin).
 //  3. Error message swallowed → only ?error=session_failed was passed.
 //     Fix: URL-encode the full error message so the frontend can show it.
 func (h *Handler) KiteCallback(c *gin.Context) {
@@ -329,14 +348,27 @@ func (h *Handler) KiteCallback(c *gin.Context) {
 	reqToken := c.Query("request_token")
 	status   := c.Query("status")
 
+	// Recover the originating frontend host from the OAuth state parameter.
+	// KiteLogin embeds it so the redirect back works even when this callback
+	// is registered on a different host (e.g. OCI) than where login started.
+	returnBase := ""
+	if s, _ := url.QueryUnescape(c.Query("state")); isSafeLocalOriginNaren(s) {
+		returnBase = s
+	}
+	redirectTo := func(path string) string {
+		if returnBase != "" {
+			return returnBase + "/naren" + path
+		}
+		return frontendURL(c, path)
+	}
+
 	// Kite login was cancelled or failed on Zerodha's side.
 	if status != "success" || reqToken == "" {
-		reason := c.Query("message") // Kite sometimes includes a message param
+		reason := c.Query("message")
 		if reason == "" {
 			reason = fmt.Sprintf("Kite returned status=%q", status)
 		}
-		dest := frontendURL(c, "/kite-terminal?error="+url.QueryEscape(reason))
-		c.Redirect(http.StatusFound, dest)
+		c.Redirect(http.StatusFound, redirectTo("/kite-terminal?error="+url.QueryEscape(reason)))
 		return
 	}
 
@@ -344,19 +376,18 @@ func (h *Handler) KiteCallback(c *gin.Context) {
 	// "invalid session" error on browser back/refresh of the callback URL).
 	if kiteSvc.client.IsConnected() {
 		kiteSvc.logger.Info("KiteCallback: already connected, skipping re-exchange")
-		c.Redirect(http.StatusFound, frontendURL(c, "/kite-terminal?connected=1&tab=signals"))
+		c.Redirect(http.StatusFound, redirectTo("/kite-terminal?connected=1&tab=signals"))
 		return
 	}
 
 	if err := kiteSvc.client.GenerateSession(reqToken); err != nil {
 		kiteSvc.logger.Error("kite session exchange failed", zap.Error(err))
-		dest := frontendURL(c, "/kite-terminal?error="+url.QueryEscape(err.Error()))
-		c.Redirect(http.StatusFound, dest)
+		c.Redirect(http.StatusFound, redirectTo("/kite-terminal?error="+url.QueryEscape(err.Error())))
 		return
 	}
 
 	persistToken(kiteSvc.client.AccessToken())
-	c.Redirect(http.StatusFound, frontendURL(c, "/kite-terminal?connected=1&tab=signals"))
+	c.Redirect(http.StatusFound, redirectTo("/kite-terminal?connected=1&tab=signals"))
 }
 
 // KiteSetToken accepts an access_token pasted directly by the user.
@@ -635,4 +666,24 @@ func (h *Handler) PaperParams(c *gin.Context) {
 	_ = c.ShouldBindJSON(&body)
 	kiteSvc.engine.SetParams(body.RR, body.RiskPct, body.Lots, body.Conf)
 	c.JSON(http.StatusOK, kiteSvc.engine.Snapshot())
+}
+
+// localhostOriginNaren returns the scheme+host when the request comes from
+// localhost (detected via Referer/Origin headers). Returns "" in production.
+func localhostOriginNaren(c *gin.Context) string {
+	for _, h := range []string{c.GetHeader("Origin"), c.GetHeader("Referer")} {
+		if strings.Contains(h, "localhost") || strings.Contains(h, "127.0.0.1") {
+			if u, err := url.Parse(h); err == nil && u.Host != "" {
+				return u.Scheme + "://" + u.Host
+			}
+		}
+	}
+	return ""
+}
+
+// isSafeLocalOriginNaren returns true only for localhost/loopback scheme+host
+// strings to prevent open-redirect attacks on the OAuth state parameter.
+func isSafeLocalOriginNaren(s string) bool {
+	return strings.HasPrefix(s, "http://localhost:") ||
+		strings.HasPrefix(s, "http://127.0.0.1:")
 }

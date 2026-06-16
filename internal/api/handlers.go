@@ -686,6 +686,9 @@ func (h *Handler) UndervaluedStocks(c *gin.Context) {
 // ─── Zerodha / Kite Handlers ──────────────────────────────────────────────────
 
 // ZerodhaLoginURL returns the Kite Connect OAuth URL.
+// The originating host is encoded in the OAuth state parameter so that
+// ZerodhaCallback can redirect back to the right frontend after auth —
+// even when the Kite redirect URI is registered to a different host (e.g. OCI).
 func (h *Handler) ZerodhaLoginURL(c *gin.Context) {
 	if h.kite == nil || h.cfg.Zerodha.APIKey == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
@@ -695,8 +698,16 @@ func (h *Handler) ZerodhaLoginURL(c *gin.Context) {
 		})
 		return
 	}
+
+	// Detect the frontend's origin from headers so we can carry it through
+	// the Kite OAuth round-trip as a state parameter.
+	stateBase := localhostOrigin(c)
+	loginURL := h.kite.LoginURL(h.cfg.Zerodha.RedirectURL)
+	if stateBase != "" {
+		loginURL += "&state=" + url.QueryEscape(stateBase)
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"login_url":  h.kite.LoginURL(h.cfg.Zerodha.RedirectURL),
+		"login_url":  loginURL,
 		"configured": true,
 	})
 }
@@ -706,17 +717,28 @@ func (h *Handler) ZerodhaCallback(c *gin.Context) {
 	reqToken := c.Query("request_token")
 	status   := c.Query("status")
 
-	frontendBase := "http://localhost:5173/naren"
+	// Recover the originating frontend host from the OAuth state parameter.
+	// Only localhost origins are trusted; production uses a relative URL.
+	returnBase := ""
+	if s, _ := url.QueryUnescape(c.Query("state")); isSafeLocalOrigin(s) {
+		returnBase = s
+	}
+	narenRedirect := func(suffix string) string {
+		if returnBase != "" {
+			return returnBase + "/naren" + suffix
+		}
+		return "/naren" + suffix // relative — works on any production host
+	}
 
 	if status != "success" || reqToken == "" {
-		c.Redirect(http.StatusFound, frontendBase+"?zerodha=error&msg=login_cancelled")
+		c.Redirect(http.StatusFound, narenRedirect("?zerodha=error&msg=login_cancelled"))
 		return
 	}
 
 	accessToken, err := h.kite.ExchangeToken(reqToken)
 	if err != nil {
 		c.Redirect(http.StatusFound,
-			frontendBase+"?zerodha=error&msg="+url.QueryEscape(err.Error()))
+			narenRedirect("?zerodha=error&msg="+url.QueryEscape(err.Error())))
 		return
 	}
 
@@ -730,7 +752,33 @@ func (h *Handler) ZerodhaCallback(c *gin.Context) {
 		h.kiteStream.Start()
 	}
 
-	c.Redirect(http.StatusFound, frontendBase+"?zerodha=connected")
+	c.Redirect(http.StatusFound, narenRedirect("?zerodha=connected"))
+}
+
+// localhostOrigin returns the scheme+host of the request if it originated from
+// localhost (detected via Referer/Origin headers), or "" for production.
+func localhostOrigin(c *gin.Context) string {
+	for _, h := range []string{c.GetHeader("Origin"), c.GetHeader("Referer")} {
+		if h == "" {
+			continue
+		}
+		if strings.Contains(h, "localhost") || strings.Contains(h, "127.0.0.1") {
+			if u, err := url.Parse(h); err == nil && u.Host != "" {
+				return u.Scheme + "://" + u.Host
+			}
+		}
+	}
+	return ""
+}
+
+// isSafeLocalOrigin returns true when s is a localhost/loopback URL.
+// Prevents open-redirect attacks by rejecting arbitrary state values.
+func isSafeLocalOrigin(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.HasPrefix(s, "http://localhost:") ||
+		strings.HasPrefix(s, "http://127.0.0.1:")
 }
 
 // ZerodhaStatus returns Zerodha connection state.

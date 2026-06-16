@@ -145,6 +145,7 @@ func (h *Handler) ChallengeLiveConfig(c *gin.Context) {
 		MaxDailyLoss     float64 `json:"max_daily_loss"`
 		MaxConsecLosses  int     `json:"max_consec_losses"`
 		DailyRiskCapital float64 `json:"daily_risk_capital"`
+		MaxEntriesPerDay int     `json:"max_entries_per_day"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -162,11 +163,16 @@ func (h *Handler) ChallengeLiveConfig(c *gin.Context) {
 		MaxDailyLoss:     body.MaxDailyLoss,
 		MaxConsecLosses:  body.MaxConsecLosses,
 		DailyRiskCapital: body.DailyRiskCapital,
+		MaxEntriesPerDay: body.MaxEntriesPerDay,
 	}); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, challengeSvc.Status())
+	// Return immediately — the frontend refreshes status via its own loadAll() poll.
+	// Calling challengeSvc.Status() here blocks for up to 20 s when the WebSocket
+	// ticker hasn't populated livePnL yet (it falls back to a blocking Kite LTP
+	// REST call), which makes the "Go LIVE" button appear permanently stuck.
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // POST /api/v1/challenge/pause

@@ -24,6 +24,7 @@ interface ChallengeTrade {
   entry_snapshot: OptionSnapshot
   exit_time?: string; exit_spot: number; exit_premium: number; exit_reason: string
   rr: number; pnl: number; pnl_pct: number; status: string
+  live: boolean; live_order_id: string; live_exit_order_id: string
   created_at: string
 }
 
@@ -67,6 +68,7 @@ interface ChallengeStatus {
   live_max_daily_loss?: number
   live_max_consec_losses?: number
   live_daily_risk_capital?: number
+  live_max_entries_per_day?: number
 }
 
 // Streamed every ~2s over SSE from /live/stream (Kite-WebSocket driven).
@@ -109,8 +111,14 @@ const STRAT_SHORT: Record<string, string> = {
   NO_TRADE:'No Trade',
 }
 
-function post(url: string, body?: unknown) {
-  return fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined }).then(r => r.json())
+function post(url: string, body?: unknown, signal?: AbortSignal) {
+  return fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined, signal }).then(r => r.json())
+}
+
+function postWithTimeout(url: string, body?: unknown, timeoutMs = 8000) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  return post(url, body, ctrl.signal).finally(() => clearTimeout(timer))
 }
 
 // ─── Countdown ────────────────────────────────────────────────────────────────
@@ -502,7 +510,10 @@ function TradeLog({ trades }: { trades: ChallengeTrade[] }) {
                   <td className="px-3 py-2 text-slate-400 font-mono whitespace-nowrap">
                     {new Date(t.entry_time).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}
                   </td>
-                  <td className="px-3 py-2 font-mono text-slate-100 font-semibold">{t.trading_symbol}</td>
+                  <td className="px-3 py-2 font-mono text-slate-100 font-semibold">
+                    {t.trading_symbol}
+                    {t.live && <span title={`Real Zerodha order: ${t.live_order_id}`} className="ml-1.5 text-[10px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded px-1 py-0.5 align-middle">⚡ LIVE</span>}
+                  </td>
                   <td className="px-2 py-2 text-emerald-300 font-mono text-[10px]">{t.expiry}</td>
                   <td className="px-2 py-2 text-right text-slate-200 font-mono font-bold">{t.strike?.toFixed(0)}</td>
                   <td className="px-2 py-2 text-right text-slate-400">{t.dte}d</td>
@@ -515,7 +526,7 @@ function TradeLog({ trades }: { trades: ChallengeTrade[] }) {
                   <td className="px-2 py-2 text-slate-300">{STRAT_SHORT[t.strategy] || t.strategy}</td>
                   <td className="px-2 py-2 text-slate-500 whitespace-nowrap">{t.exit_reason || '—'}</td>
                   <td className={`px-3 py-2 text-right font-bold ${t.status === 'OPEN' ? 'text-blue-400' : pc(t.pnl)}`}>
-                    {t.status === 'OPEN' ? 'LIVE' : `${sgn(t.pnl)}₹${fmt(t.pnl)}`}
+                    {t.status === 'OPEN' ? '—' : `${sgn(t.pnl)}₹${fmt(t.pnl)}`}
                   </td>
                 </tr>
                 {expanded === t.id && (
@@ -818,6 +829,7 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
   const [maxDailyLoss, setMaxDailyLoss] = useState<number>(status.live_max_daily_loss || 0)
   const [maxConsec, setMaxConsec] = useState<number>(status.live_max_consec_losses || 0)
   const [dailyRiskCap, setDailyRiskCap] = useState<number>(status.live_daily_risk_capital || 0)
+  const [maxEntries, setMaxEntries] = useState<number>(status.live_max_entries_per_day || 3)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -833,14 +845,15 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
     if (status.live_max_daily_loss != null) setMaxDailyLoss(status.live_max_daily_loss)
     if (status.live_max_consec_losses != null) setMaxConsec(status.live_max_consec_losses)
     if (status.live_daily_risk_capital != null) setDailyRiskCap(status.live_daily_risk_capital)
-  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr, status.live_max_daily_loss, status.live_max_consec_losses, status.live_daily_risk_capital])
+    if (status.live_max_entries_per_day != null) setMaxEntries(status.live_max_entries_per_day || 3)
+  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr, status.live_max_daily_loss, status.live_max_consec_losses, status.live_daily_risk_capital, status.live_max_entries_per_day])
 
   const allowed = !!status.live_allowed
 
   const save = async (nextEnabled: boolean) => {
     setBusy(true); setMsg('')
     try {
-      const r = await post('/api/naren/v1/challenge/live-config', {
+      const r = await postWithTimeout('/api/naren/v1/challenge/live-config', {
         enabled: nextEnabled,
         profit_target: target,
         max_lots: maxLots,
@@ -852,9 +865,13 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
         max_daily_loss: maxDailyLoss,
         max_consec_losses: maxConsec,
         daily_risk_capital: dailyRiskCap,
+        max_entries_per_day: maxEntries,
       })
       if (r?.error) { setMsg(r.error); setEnabled(!!status.live_enabled) }
       else onChange()
+    } catch (e: any) {
+      const msg = e?.name === 'AbortError' ? 'Request timed out — server may be busy' : (e?.message || 'Request failed')
+      setMsg(msg); setEnabled(!!status.live_enabled)
     } finally { setBusy(false) }
   }
 
@@ -923,6 +940,12 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
               title="Stop live trades after this many back-to-back losing trades in a day. 0 = no limit."
               className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
           </label>
+          <label className="text-xs text-slate-400">Max entries / day
+            <input type="number" min={1} step={1} value={maxEntries}
+              onChange={e => setMaxEntries(Math.max(1, Math.floor(+e.target.value)))}
+              title="Maximum number of entries allowed per calendar day. Default is 3."
+              className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
           <label className="text-xs text-slate-400">Risk capital / day (₹)
             <input type="number" min={0} step={1000} value={dailyRiskCap}
               onChange={e => setDailyRiskCap(Math.max(0, +e.target.value))}
@@ -963,6 +986,7 @@ export default function ChallengeDashboard() {
   const [expiries, setExpiries] = useState<any[]>([])
   const [tab,     setTab]     = useState<'live' | 'trades' | 'daily' | 'expiry'>('live')
   const [error,   setError]   = useState('')
+  const [enterErr, setEnterErr] = useState('')
   const [live,    setLive]    = useState<LiveSnap | null>(null)
 
   const loadAll = useCallback(async () => {
@@ -1111,10 +1135,18 @@ export default function ChallengeDashboard() {
                     <p key={i} className="text-xs text-slate-400 flex gap-2 mt-1"><span className="text-blue-400">›</span>{r}</p>
                   ))}
                   {!openTrade && status.last_signal.strategy !== 'NO_TRADE' && (
-                    <button onClick={() => post('/api/naren/v1/challenge/enter').then(loadAll)}
-                      className="mt-3 px-5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg font-medium transition-colors">
-                      Enter Trade Manually
-                    </button>
+                    <div className="mt-3 flex items-center gap-3 flex-wrap">
+                      <button onClick={async () => {
+                        setEnterErr('')
+                        const r = await post('/api/naren/v1/challenge/enter')
+                        if (r?.error) setEnterErr(r.error)
+                        else loadAll()
+                      }}
+                        className="px-5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg font-medium transition-colors">
+                        Enter Trade Manually
+                      </button>
+                      {enterErr && <span className="text-red-400 text-xs">⚠ {enterErr}</span>}
+                    </div>
                   )}
                 </div>
               )}

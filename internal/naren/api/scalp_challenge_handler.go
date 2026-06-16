@@ -77,6 +77,7 @@ func (h *Handler) ScalpChallengeLiveConfig(c *gin.Context) {
 		MaxDailyLoss     float64 `json:"max_daily_loss"`
 		MaxConsecLosses  int     `json:"max_consec_losses"`
 		DailyRiskCapital float64 `json:"daily_risk_capital"`
+		MaxEntriesPerDay int     `json:"max_entries_per_day"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -94,11 +95,12 @@ func (h *Handler) ScalpChallengeLiveConfig(c *gin.Context) {
 		MaxDailyLoss:     body.MaxDailyLoss,
 		MaxConsecLosses:  body.MaxConsecLosses,
 		DailyRiskCapital: body.DailyRiskCapital,
+		MaxEntriesPerDay: body.MaxEntriesPerDay,
 	}); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, scalpChallengeSvc.Status())
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // POST /api/naren/v1/scalp-challenge/pause

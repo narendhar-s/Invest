@@ -78,6 +78,7 @@ type ChallengeService struct {
 	liveMaxDailyLoss   float64 // ₹ — stop taking LIVE trades once the day's realized LIVE loss reaches this (0 = no limit)
 	liveMaxConsecLosses int   // stop taking LIVE trades after this many back-to-back LIVE losses in a day (0 = no limit)
 	liveDailyRiskCapital float64 // ₹ — day's LIVE risk budget; stop once (live trades today × risk/trade) reaches it (0 = no limit)
+	liveMaxEntriesPerDay int  // max LIVE entries allowed per calendar day (0 = use hardcoded default of 3)
 	openLiveQty      int     // actual qty sent for the open LIVE position, for an exact SELL on exit
 
 	running bool
@@ -126,6 +127,7 @@ type LiveSettings struct {
 	MaxDailyLoss     float64 // ₹ — stop LIVE trades once the day's realized LIVE loss reaches this (0 = none)
 	MaxConsecLosses  int     // stop LIVE trades after this many back-to-back LIVE losses in a day (0 = none)
 	DailyRiskCapital float64 // ₹ — day's LIVE risk budget; stop once committed risk reaches it (0 = none)
+	MaxEntriesPerDay int     // max LIVE entries per calendar day (0 = default 3)
 }
 
 // SetLiveConfig enables/disables live order placement and sets the LIVE guards
@@ -175,6 +177,8 @@ func (cs *ChallengeService) SetLiveConfig(s LiveSettings) error {
 	cs.liveMaxDailyLoss = s.MaxDailyLoss
 	cs.liveMaxConsecLosses = s.MaxConsecLosses
 	cs.liveDailyRiskCapital = s.DailyRiskCapital
+	if s.MaxEntriesPerDay < 0 { s.MaxEntriesPerDay = 0 }
+	cs.liveMaxEntriesPerDay = s.MaxEntriesPerDay
 	if s.Enabled {
 		cs.log.Warn("⚠️ LIVE TRADING ENABLED for challenge — real Zerodha orders will be placed",
 			zap.Float64("profit_squareoff", s.ProfitTarget), zap.Int("max_lots", s.MaxLots),
@@ -590,12 +594,19 @@ func (cs *ChallengeService) dailyRiskBlocks(active *storage.ChallengeConfig, now
 	}
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, ist())
 
+	cs.mu.RLock()
+	maxEntries := cs.liveMaxEntriesPerDay
+	cs.mu.RUnlock()
+	if maxEntries <= 0 {
+		maxEntries = maxTradesPerDay // default of 3 when not configured
+	}
+
 	var entriesToday int64
 	cs.db.Model(&storage.ChallengeTrade{}).
 		Where("challenge_id = ? AND entry_time >= ?", active.ID, dayStart).
 		Count(&entriesToday)
-	if entriesToday >= maxTradesPerDay {
-		return true, fmt.Sprintf("max %d trades/day reached", maxTradesPerDay)
+	if entriesToday >= int64(maxEntries) {
+		return true, fmt.Sprintf("max %d trades/day reached", maxEntries)
 	}
 
 	var realizedToday float64
@@ -1299,6 +1310,7 @@ type ChallengeStatus struct {
 	LiveMaxDailyLoss     float64 `json:"live_max_daily_loss"`     // ₹ daily loss stop for LIVE
 	LiveMaxConsecLosses  int     `json:"live_max_consec_losses"`  // back-to-back LIVE loss stop
 	LiveDailyRiskCapital float64 `json:"live_daily_risk_capital"` // ₹ day's LIVE risk budget
+	LiveMaxEntriesPerDay int     `json:"live_max_entries_per_day"` // max LIVE entries per day (0 = default 3)
 }
 
 func (cs *ChallengeService) Status() ChallengeStatus {
@@ -1320,6 +1332,7 @@ func (cs *ChallengeService) Status() ChallengeStatus {
 	liveMaxDailyLoss := cs.liveMaxDailyLoss
 	liveMaxConsec := cs.liveMaxConsecLosses
 	liveDailyRiskCap := cs.liveDailyRiskCapital
+	liveMaxEntries := cs.liveMaxEntriesPerDay
 	cs.mu.RUnlock()
 
 	now := time.Now().In(ist())
@@ -1331,7 +1344,7 @@ func (cs *ChallengeService) Status() ChallengeStatus {
 		LiveWindowStart: liveWinStart, LiveWindowEnd: liveWinEnd,
 		LiveHoldConfidence: liveHoldConf, LiveRR: liveRR,
 		LiveMaxDailyLoss: liveMaxDailyLoss, LiveMaxConsecLosses: liveMaxConsec,
-		LiveDailyRiskCapital: liveDailyRiskCap,
+		LiveDailyRiskCapital: liveDailyRiskCap, LiveMaxEntriesPerDay: liveMaxEntries,
 	}
 	if active == nil { return s }
 
