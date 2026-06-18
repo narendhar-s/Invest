@@ -67,7 +67,8 @@ interface ChallengeStatus {
   live_rr?: number
   live_max_daily_loss?: number
   live_max_consec_losses?: number
-  live_daily_risk_capital?: number
+  live_daily_target_profit?: number
+  live_trail_sl?: number
   live_max_entries_per_day?: number
 }
 
@@ -828,7 +829,8 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
   const [rr, setRr] = useState<number>(status.live_rr || 0)
   const [maxDailyLoss, setMaxDailyLoss] = useState<number>(status.live_max_daily_loss || 0)
   const [maxConsec, setMaxConsec] = useState<number>(status.live_max_consec_losses || 0)
-  const [dailyRiskCap, setDailyRiskCap] = useState<number>(status.live_daily_risk_capital || 0)
+  const [dailyTarget, setDailyTarget] = useState<number>(status.live_daily_target_profit || 0)
+  const [trailSL, setTrailSL] = useState<number>(status.live_trail_sl || 0)
   const [maxEntries, setMaxEntries] = useState<number>(status.live_max_entries_per_day || 3)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -844,9 +846,10 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
     if (status.live_rr != null) setRr(status.live_rr)
     if (status.live_max_daily_loss != null) setMaxDailyLoss(status.live_max_daily_loss)
     if (status.live_max_consec_losses != null) setMaxConsec(status.live_max_consec_losses)
-    if (status.live_daily_risk_capital != null) setDailyRiskCap(status.live_daily_risk_capital)
+    if (status.live_daily_target_profit != null) setDailyTarget(status.live_daily_target_profit)
+    if (status.live_trail_sl != null) setTrailSL(status.live_trail_sl)
     if (status.live_max_entries_per_day != null) setMaxEntries(status.live_max_entries_per_day || 3)
-  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr, status.live_max_daily_loss, status.live_max_consec_losses, status.live_daily_risk_capital, status.live_max_entries_per_day])
+  }, [status.live_enabled, status.live_profit_target, status.live_max_lots, status.live_min_profit, status.live_window_start, status.live_window_end, status.live_hold_confidence, status.live_rr, status.live_max_daily_loss, status.live_max_consec_losses, status.live_daily_target_profit, status.live_trail_sl, status.live_max_entries_per_day])
 
   const allowed = !!status.live_allowed
 
@@ -864,7 +867,8 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
         rr: rr,
         max_daily_loss: maxDailyLoss,
         max_consec_losses: maxConsec,
-        daily_risk_capital: dailyRiskCap,
+        daily_target_profit: dailyTarget,
+        trail_sl: trailSL,
         max_entries_per_day: maxEntries,
       })
       if (r?.error) { setMsg(r.error); setEnabled(!!status.live_enabled) }
@@ -946,10 +950,16 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
               title="Maximum number of entries allowed per calendar day. Default is 3."
               className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
           </label>
-          <label className="text-xs text-slate-400">Risk capital / day (₹)
-            <input type="number" min={0} step={1000} value={dailyRiskCap}
-              onChange={e => setDailyRiskCap(Math.max(0, +e.target.value))}
-              title="Day's live risk budget. Stops once (live trades today × risk/trade) reaches this. 0 = no limit."
+          <label className="text-xs text-slate-400">Daily target profit (₹)
+            <input type="number" min={0} step={1000} value={dailyTarget}
+              onChange={e => setDailyTarget(Math.max(0, +e.target.value))}
+              title="Once the day's realized LIVE profit reaches this, no more live trades today. 0 = no target."
+              className="block mt-1 w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Trailing SL (₹)
+            <input type="number" min={0} step={500} value={trailSL}
+              onChange={e => setTrailSL(Math.max(0, +e.target.value))}
+              title="Trailing stop: exit the live position when its P&L falls this far from its peak. 0 = off."
               className="block mt-1 w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
           </label>
           <button disabled={!allowed || busy} onClick={() => { const n = !enabled; setEnabled(n); save(n) }}

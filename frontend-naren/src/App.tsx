@@ -28,6 +28,7 @@ import PnlAnalysis from './pages/PnlAnalysis'
 import KiteTerminal from './pages/KiteTerminal'
 import ChallengeDashboard from './pages/ChallengeDashboard'
 import ScalpChallengeDashboard from './pages/ScalpChallengeDashboard'
+import SMCChallengeDashboard from './pages/SMCChallengeDashboard'
 import LiveTerminal from './pages/LiveTerminal'
 import StrategyCompare from './pages/StrategyCompare'
 
@@ -66,6 +67,7 @@ export default function App() {
             <Route path="/kite-terminal" element={<KiteTerminal />} />
             <Route path="/challenge" element={<ChallengeDashboard />} />
             <Route path="/scalp-challenge" element={<ScalpChallengeDashboard />} />
+            <Route path="/smc-challenge" element={<SMCChallengeDashboard />} />
             <Route path="/live" element={<LiveTerminal />} />
             <Route path="/strategy-compare" element={<StrategyCompare />} />
             <Route path="*" element={<Navigate to="/" replace />} />

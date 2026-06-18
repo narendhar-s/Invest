@@ -503,7 +503,7 @@ function StartForm({ onStart }: { onStart: () => void }) {
   const start = async () => {
     setLoading(true); setError('')
     try {
-      const r = await post('/api/naren/v1/scalp-challenge/start', { lots, risk_per_trade: risk, target_per_trade: target, notes })
+      const r = await post('/api/naren/v1/smc-challenge/start', { lots, risk_per_trade: risk, target_per_trade: target, notes })
       if (r.error) throw new Error(r.error)
       onStart()
     } catch (e) { setError((e as Error).message) }
@@ -516,8 +516,8 @@ function StartForm({ onStart }: { onStart: () => void }) {
     <div className="max-w-xl mx-auto bg-slate-800/80 border border-slate-700/60 rounded-2xl p-8 space-y-5">
       <div className="text-center">
         <div className="text-5xl mb-3">🏆</div>
-        <h2 className="text-xl font-bold text-slate-100">Start Your 90-Day Scalp Challenge</h2>
-        <p className="text-slate-400 text-sm mt-1">Pure paper trading · Real Kite signals · PCR + IV filtered · Track every trade</p>
+        <h2 className="text-xl font-bold text-slate-100">Start Your 90-Day SMC Challenge</h2>
+        <p className="text-slate-400 text-sm mt-1">Pure paper trading · Real Kite signals · SMC + FVG + VWAP confluence · Track every trade</p>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
@@ -552,7 +552,7 @@ function StartForm({ onStart }: { onStart: () => void }) {
         <span className="text-slate-400">·</span>
         <span className="text-slate-300">{lots} lots × 75 = {lots * 75} qty</span>
         <span className="text-slate-400">·</span>
-        <span className="text-slate-400 text-xs">90 days · real Kite LTP at fill · PCR filter</span>
+        <span className="text-slate-400 text-xs">90 days · real Kite LTP at fill · 5m entry / 15m HTF</span>
       </div>
 
       <div>
@@ -566,7 +566,7 @@ function StartForm({ onStart }: { onStart: () => void }) {
 
       <button onClick={start} disabled={loading}
         className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-bold rounded-xl transition-colors">
-        {loading ? 'Starting…' : '🚀 Start 90-Day Scalp Challenge'}
+        {loading ? 'Starting…' : '🚀 Start 90-Day SMC Challenge'}
       </button>
     </div>
   )
@@ -610,7 +610,7 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
   const save = async (nextEnabled: boolean) => {
     setBusy(true); setMsg('')
     try {
-      const r = await post('/api/naren/v1/scalp-challenge/live-config', {
+      const r = await post('/api/naren/v1/smc-challenge/live-config', {
         enabled: nextEnabled,
         profit_target: target,
         max_lots: maxLots,
@@ -731,23 +731,181 @@ function LiveTradingPanel({ status, onChange }: { status: ChallengeStatus; onCha
   )
 }
 
+// ─── Backtest panel ─────────────────────────────────────────────────────────
+
+interface SMCBtTrade {
+  entry_time: string; exit_time: string; direction: string; option_type: string
+  strike: number; entry_spot: number; exit_spot: number
+  entry_premium: number; exit_premium: number; pnl: number; confidence: number; reason: string
+}
+interface SMCBtResult {
+  days: number; lots: number; rr: number; trades: number; wins: number; losses: number
+  win_rate: number; total_pnl: number; avg_pnl: number; max_drawdown: number
+  profit_factor: number; equity: number[]; trade_list: SMCBtTrade[]; summary: string
+}
+
+function BacktestEquity({ equity }: { equity: number[] }) {
+  if (!equity?.length) return null
+  const w = 720, h = 120, pad = 4
+  const min = Math.min(0, ...equity), max = Math.max(0, ...equity)
+  const range = max - min || 1
+  const x = (i: number) => pad + (i / Math.max(1, equity.length - 1)) * (w - 2 * pad)
+  const y = (v: number) => h - pad - ((v - min) / range) * (h - 2 * pad)
+  const pts = equity.map((v, i) => `${x(i)},${y(v)}`).join(' ')
+  const zeroY = y(0)
+  const up = equity[equity.length - 1] >= 0
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-28">
+      <line x1={pad} y1={zeroY} x2={w - pad} y2={zeroY} stroke="#475569" strokeWidth="0.5" strokeDasharray="3 3" />
+      <polyline points={pts} fill="none" stroke={up ? '#34d399' : '#f87171'} strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+function BacktestPanel() {
+  const [days, setDays] = useState(15)
+  const [lots, setLots] = useState(2)
+  const [rr, setRr] = useState(3)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [res, setRes] = useState<SMCBtResult | null>(null)
+
+  const run = async () => {
+    setBusy(true); setErr(''); setRes(null)
+    try {
+      const r = await post('/api/naren/v1/kite/smc-backtest', { days, lots, rr })
+      if (r?.error) setErr(r.error)
+      else setRes(r as SMCBtResult)
+    } catch (e: any) {
+      setErr(e?.message || 'Backtest request failed')
+    } finally { setBusy(false) }
+  }
+
+  const fmt = (n: number) => (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 p-5">
+        <h3 className="text-sm font-semibold text-slate-200 mb-1">Backtest — SMC + FVG + VWAP</h3>
+        <p className="text-xs text-slate-400 mb-4">
+          Replays the exact live signal pipeline (5-min entries on a 15-min HTF context) over recent
+          NIFTY history with Black-Scholes-priced ATM weekly options. Entries fill at the next bar's open.
+        </p>
+        <div className="flex items-end gap-3 flex-wrap">
+          <label className="text-xs text-slate-400">Days (history)
+            <input type="number" min={1} max={60} value={days}
+              onChange={e => setDays(Math.min(60, Math.max(1, Math.floor(+e.target.value))))}
+              title="Calendar days of 5-min NIFTY history to replay (max 60)."
+              className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">Lots
+            <input type="number" min={1} step={1} value={lots}
+              onChange={e => setLots(Math.max(1, Math.floor(+e.target.value)))}
+              className="block mt-1 w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <label className="text-xs text-slate-400">R:R (target ÷ stop)
+            <input type="number" min={0.5} step={0.5} value={rr}
+              onChange={e => setRr(Math.max(0.5, +e.target.value))}
+              title="Spot reward-to-risk. Default 3.0 = 1.8×ATR target ÷ 0.6×ATR stop."
+              className="block mt-1 w-24 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100" />
+          </label>
+          <button disabled={busy} onClick={run}
+            className="px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white transition-colors">
+            {busy ? 'Running…' : '▶ Run Backtest'}
+          </button>
+        </div>
+        {err && <p className="text-xs text-red-400 mt-3">{err}</p>}
+      </div>
+
+      {res && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {([
+              ['Net P&L', `₹${fmt(res.total_pnl)}`, res.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'],
+              ['Win Rate', `${res.win_rate}%`, res.win_rate >= 50 ? 'text-emerald-400' : 'text-yellow-400'],
+              ['Trades', `${res.trades}`, 'text-slate-100'],
+              ['Profit Factor', `${res.profit_factor}`, res.profit_factor >= 1.5 ? 'text-emerald-400' : 'text-yellow-400'],
+              ['Wins / Losses', `${res.wins} / ${res.losses}`, 'text-slate-100'],
+              ['Avg / Trade', `₹${fmt(res.avg_pnl)}`, res.avg_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'],
+              ['Max Drawdown', `₹${fmt(res.max_drawdown)}`, 'text-red-400'],
+              ['Window', `${res.days}d · ${res.lots} lot · RR ${res.rr}`, 'text-slate-300'],
+            ] as const).map(([label, val, cls]) => (
+              <div key={label} className="bg-slate-800/70 rounded-xl border border-slate-700/50 px-4 py-3">
+                <p className="text-[11px] text-slate-400">{label}</p>
+                <p className={`text-lg font-bold ${cls}`}>{val}</p>
+              </div>
+            ))}
+          </div>
+
+          {res.summary && <p className="text-xs text-slate-400">{res.summary}</p>}
+
+          {res.equity?.length > 0 && (
+            <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 p-4">
+              <p className="text-xs text-slate-400 mb-1">Equity Curve (cumulative ₹ P&L)</p>
+              <BacktestEquity equity={res.equity} />
+            </div>
+          )}
+
+          {res.trade_list?.length > 0 && (
+            <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-700/50">
+                <h3 className="text-sm font-semibold text-slate-200">Trades ({res.trade_list.length})</h3>
+              </div>
+              <div className="overflow-x-auto max-h-[28rem]">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-slate-800">
+                    <tr className="text-slate-400 border-b border-slate-700/40">
+                      <th className="text-left px-3 py-2">Entry</th>
+                      <th className="text-left px-2 py-2">Dir</th>
+                      <th className="text-right px-2 py-2">Strike</th>
+                      <th className="text-right px-2 py-2">Entry₹</th>
+                      <th className="text-right px-2 py-2">Exit₹</th>
+                      <th className="text-right px-2 py-2">Conf</th>
+                      <th className="text-left px-2 py-2">Reason</th>
+                      <th className="text-right px-3 py-2">P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.trade_list.slice().reverse().map((t, i) => (
+                      <tr key={i} className="border-b border-slate-800/60">
+                        <td className="px-3 py-1.5 text-slate-300 whitespace-nowrap">{new Date(t.entry_time).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</td>
+                        <td className="px-2 py-1.5"><span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${t.option_type==='CE'?'bg-emerald-500/20 text-emerald-300':'bg-red-500/20 text-red-300'}`}>{t.option_type}</span></td>
+                        <td className="px-2 py-1.5 text-right text-slate-300">{t.strike}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-300">{t.entry_premium}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-300">{t.exit_premium}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-400">{t.confidence}%</td>
+                        <td className="px-2 py-1.5 text-slate-400">{t.reason}</td>
+                        <td className={`px-3 py-1.5 text-right font-semibold ${t.pnl>=0?'text-emerald-400':'text-red-400'}`}>₹{fmt(t.pnl)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-export default function ScalpChallengeDashboard() {
+export default function SMCChallengeDashboard() {
   const [status,  setStatus]  = useState<ChallengeStatus | null>(null)
   const [trades,  setTrades]  = useState<ChallengeTrade[]>([])
   const [days,    setDays]    = useState<ChallengeDay[]>([])
   const [expiries, setExpiries] = useState<any[]>([])
-  const [tab,     setTab]     = useState<'live' | 'trades' | 'daily' | 'expiry'>('live')
+  const [tab,     setTab]     = useState<'live' | 'trades' | 'daily' | 'expiry' | 'backtest'>('live')
   const [error,   setError]   = useState('')
 
   const loadAll = useCallback(async () => {
     try {
       const [s, t, d, e] = await Promise.all([
-        fetch('/api/naren/v1/scalp-challenge/status').then(r => r.json()),
-        fetch('/api/naren/v1/scalp-challenge/trades?limit=500').then(r => r.json()),
-        fetch('/api/naren/v1/scalp-challenge/daily').then(r => r.json()),
-        fetch('/api/naren/v1/scalp-challenge/expiry-breakdown').then(r => r.json()),
+        fetch('/api/naren/v1/smc-challenge/status').then(r => r.json()),
+        fetch('/api/naren/v1/smc-challenge/trades?limit=500').then(r => r.json()),
+        fetch('/api/naren/v1/smc-challenge/daily').then(r => r.json()),
+        fetch('/api/naren/v1/smc-challenge/expiry-breakdown').then(r => r.json()),
       ])
       // Reflect the latest backend error, and clear it once it resolves
       // (e.g. after the shared Zerodha token reconnects Kite).
@@ -764,7 +922,7 @@ export default function ScalpChallengeDashboard() {
   }, [status?.active, loadAll])
 
   const onExit = async () => {
-    await post('/api/naren/v1/scalp-challenge/exit')
+    await post('/api/naren/v1/smc-challenge/exit')
     loadAll()
   }
 
@@ -778,7 +936,7 @@ export default function ScalpChallengeDashboard() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">⚡ 90-Day Scalp Challenge</h1>
+          <h1 className="text-2xl font-bold text-slate-100">🎯 90-Day SMC Challenge</h1>
           <p className="text-slate-400 text-sm mt-0.5">
             Paper trading · Real Kite LTP · PCR-filtered signals · All trades recorded in PostgreSQL
           </p>
@@ -786,7 +944,7 @@ export default function ScalpChallengeDashboard() {
         {status?.active && (
           <div className="flex items-center gap-2">
             <button onClick={loadAll} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg transition-colors">↻ Refresh</button>
-            <button onClick={() => post('/api/naren/v1/scalp-challenge/snapshot').then(loadAll)}
+            <button onClick={() => post('/api/naren/v1/smc-challenge/snapshot').then(loadAll)}
               className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg transition-colors">Write Snapshot</button>
           </div>
         )}
@@ -799,9 +957,15 @@ export default function ScalpChallengeDashboard() {
       {/* Live trading controls */}
       {status?.active && <LiveTradingPanel status={status} onChange={loadAll} />}
 
-      {/* No active challenge */}
+      {/* No active challenge — let users backtest the strategy before starting */}
       {status && !status.active && (
-        <StartForm onStart={loadAll} />
+        <div className="space-y-6">
+          <StartForm onStart={loadAll} />
+          <div>
+            <h3 className="text-sm font-semibold text-slate-300 mb-2">🧪 Backtest the strategy first</h3>
+            <BacktestPanel />
+          </div>
+        </div>
       )}
 
       {/* Active challenge */}
@@ -822,6 +986,7 @@ export default function ScalpChallengeDashboard() {
               ['trades', '📋 Trades', `${trades.filter(t=>t.status==='CLOSED').length}`],
               ['daily',  '📅 Daily',  `${days.length}d`],
               ['expiry', '🗂 Expiry', `${expiries.length}`],
+              ['backtest', '🧪 Backtest', ''],
             ] as const).map(([key, label, badge]) => (
               <button key={key} onClick={() => setTab(key as any)}
                 className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors
@@ -837,7 +1002,7 @@ export default function ScalpChallengeDashboard() {
               {/* Current signal */}
               {status.last_signal && (
                 <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 p-5">
-                  <p className="text-xs text-slate-400 mb-2">Latest Signal (Nifty 1m · EMA50/200 + Stochastic)</p>
+                  <p className="text-xs text-slate-400 mb-2">Latest Signal (Nifty 5m → 15m HTF · SMC + FVG + VWAP)</p>
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-lg font-bold text-slate-100">{STRAT_SHORT[status.last_signal.strategy] || status.last_signal.strategy}</span>
                     <span className={`text-xs px-2 py-1 rounded font-bold ${status.last_signal.direction==='BULLISH'?'bg-emerald-500/20 text-emerald-300':status.last_signal.direction==='BEARISH'?'bg-red-500/20 text-red-300':'bg-slate-700 text-slate-300'}`}>
@@ -852,7 +1017,7 @@ export default function ScalpChallengeDashboard() {
                     <p key={i} className="text-xs text-slate-400 flex gap-2 mt-1"><span className="text-blue-400">›</span>{r}</p>
                   ))}
                   {!openTrade && status.last_signal.strategy !== 'NO_TRADE' && (
-                    <button onClick={() => post('/api/naren/v1/scalp-challenge/enter').then(loadAll)}
+                    <button onClick={() => post('/api/naren/v1/smc-challenge/enter').then(loadAll)}
                       className="mt-3 px-5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg font-medium transition-colors">
                       Enter Trade Manually
                     </button>
@@ -867,6 +1032,7 @@ export default function ScalpChallengeDashboard() {
           {tab === 'trades' && <TradeLog trades={trades} />}
           {tab === 'daily' && <div className="space-y-5"><DailyTable days={days} /><EquityCurve days={days} initial={status.active.initial_capital} /></div>}
           {tab === 'expiry' && <ExpiryBreakdown data={expiries} />}
+          {tab === 'backtest' && <BacktestPanel />}
         </>
       )}
     </div>

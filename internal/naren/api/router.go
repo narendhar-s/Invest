@@ -243,6 +243,26 @@ func Mount(
 		// Scalp strategy backtest (surfaced in the Kite Terminal → Backtest tab)
 		v1.POST("/kite/scalp-backtest", h.KiteScalpBacktest)
 
+		// ── 90-Day SMC Challenge (SMC + FVG + VWAP · 5-min entry / 15-min HTF · ATM CE/PE) ─
+		smc := v1.Group("/smc-challenge")
+		{
+			smc.GET("/status", h.SMCChallengeStatus)
+			smc.POST("/start", h.SMCChallengeStart)
+			smc.POST("/pause", h.SMCChallengePause)
+			smc.POST("/resume", h.SMCChallengeResume)
+			smc.POST("/enter", h.SMCChallengeEnter)
+			smc.POST("/exit", h.SMCChallengeExit)
+			smc.POST("/snapshot", h.SMCChallengeSnapshot)
+			smc.GET("/trades", h.SMCChallengeTrades)
+			smc.GET("/daily", h.SMCChallengeDaily)
+			smc.GET("/expiry-breakdown", h.SMCChallengeExpiryBreakdown)
+			smc.GET("/all", h.SMCChallengeAll)
+			smc.POST("/live-config", h.SMCChallengeLiveConfig) // enable real Zerodha orders + profit square-off
+		}
+
+		// SMC strategy backtest (surfaced in the SMC challenge → Backtest tab)
+		v1.POST("/kite/smc-backtest", h.KiteSMCBacktest)
+
 		v1.GET("/nifty/minervini", h.MinerviniPicks)
 		v1.GET("/nifty/minervini-index", h.MinerviniNiftyIndex)
 		v1.GET("/nifty/minervini-full", h.MinerviniFullScan)

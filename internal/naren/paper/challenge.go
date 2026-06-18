@@ -77,7 +77,8 @@ type ChallengeService struct {
 	liveRR           float64 // risk-reward ratio for LIVE exits (target = risk × RR; 0 = use ₹ target)
 	liveMaxDailyLoss   float64 // ₹ — stop taking LIVE trades once the day's realized LIVE loss reaches this (0 = no limit)
 	liveMaxConsecLosses int   // stop taking LIVE trades after this many back-to-back LIVE losses in a day (0 = no limit)
-	liveDailyRiskCapital float64 // ₹ — day's LIVE risk budget; stop once (live trades today × risk/trade) reaches it (0 = no limit)
+	liveDailyTargetProfit float64 // ₹ — stop taking LIVE trades once the day's realized LIVE profit reaches this (0 = no limit)
+	liveTrailSL        float64 // ₹ — trailing stop: exit when LIVE P&L drops this far from its peak (0 = no trailing stop)
 	liveMaxEntriesPerDay int  // max LIVE entries allowed per calendar day (0 = use hardcoded default of 3)
 	openLiveQty      int     // actual qty sent for the open LIVE position, for an exact SELL on exit
 
@@ -124,10 +125,11 @@ type LiveSettings struct {
 	WindowEnd      string  // "HH:MM" IST — latest a LIVE entry may open ("" = no limit)
 	HoldConfidence int     // % — keep riding past the floor only while confidence ≥ this (default 70)
 	RR             float64 // risk-reward ratio for LIVE exits (target = risk × RR; 0 = use ₹ target)
-	MaxDailyLoss     float64 // ₹ — stop LIVE trades once the day's realized LIVE loss reaches this (0 = none)
-	MaxConsecLosses  int     // stop LIVE trades after this many back-to-back LIVE losses in a day (0 = none)
-	DailyRiskCapital float64 // ₹ — day's LIVE risk budget; stop once committed risk reaches it (0 = none)
-	MaxEntriesPerDay int     // max LIVE entries per calendar day (0 = default 3)
+	MaxDailyLoss      float64 // ₹ — stop LIVE trades once the day's realized LIVE loss reaches this (0 = none)
+	MaxConsecLosses   int     // stop LIVE trades after this many back-to-back LIVE losses in a day (0 = none)
+	DailyTargetProfit float64 // ₹ — stop LIVE trades once the day's realized LIVE profit reaches this (0 = none)
+	TrailSL           float64 // ₹ — trailing stop: exit when LIVE P&L falls this far from its peak (0 = none)
+	MaxEntriesPerDay  int     // max LIVE entries per calendar day (0 = default 3)
 }
 
 // SetLiveConfig enables/disables live order placement and sets the LIVE guards
@@ -163,8 +165,11 @@ func (cs *ChallengeService) SetLiveConfig(s LiveSettings) error {
 	if s.MaxConsecLosses < 0 {
 		s.MaxConsecLosses = 0
 	}
-	if s.DailyRiskCapital < 0 {
-		s.DailyRiskCapital = 0
+	if s.DailyTargetProfit < 0 {
+		s.DailyTargetProfit = 0
+	}
+	if s.TrailSL < 0 {
+		s.TrailSL = 0
 	}
 	cs.liveEnabled = s.Enabled
 	cs.liveProfitTarget = s.ProfitTarget
@@ -176,7 +181,8 @@ func (cs *ChallengeService) SetLiveConfig(s LiveSettings) error {
 	cs.liveRR = s.RR
 	cs.liveMaxDailyLoss = s.MaxDailyLoss
 	cs.liveMaxConsecLosses = s.MaxConsecLosses
-	cs.liveDailyRiskCapital = s.DailyRiskCapital
+	cs.liveDailyTargetProfit = s.DailyTargetProfit
+	cs.liveTrailSL = s.TrailSL
 	if s.MaxEntriesPerDay < 0 { s.MaxEntriesPerDay = 0 }
 	cs.liveMaxEntriesPerDay = s.MaxEntriesPerDay
 	if s.Enabled {
@@ -186,7 +192,7 @@ func (cs *ChallengeService) SetLiveConfig(s LiveSettings) error {
 			zap.String("window", cs.liveWindowStart+"–"+cs.liveWindowEnd),
 			zap.Int("hold_confidence", s.HoldConfidence), zap.Float64("rr", s.RR),
 			zap.Float64("max_daily_loss", s.MaxDailyLoss), zap.Int("max_consec_losses", s.MaxConsecLosses),
-			zap.Float64("daily_risk_capital", s.DailyRiskCapital))
+			zap.Float64("daily_target_profit", s.DailyTargetProfit), zap.Float64("trail_sl", s.TrailSL))
 	} else {
 		cs.log.Info("live trading disabled for challenge")
 	}
@@ -207,45 +213,32 @@ func (cs *ChallengeService) withinLiveWindow(now time.Time) bool {
 }
 
 // liveRiskBlocks reports whether LIVE entries should be halted for the rest of
-// the day per the user-configured daily risk stops: max daily loss, max
-// back-to-back losses, and the day's risk-capital budget. LIVE trades only —
-// the paper simulation keeps running so the strategy/backtest are unaffected.
+// the day per the user-configured daily stops: max daily loss, daily target
+// profit, and max back-to-back losses. LIVE trades only — the paper simulation
+// keeps running so the strategy/backtest are unaffected.
 func (cs *ChallengeService) liveRiskBlocks(active *storage.ChallengeConfig, now time.Time) (bool, string) {
 	cs.mu.RLock()
 	maxLoss := cs.liveMaxDailyLoss
 	maxConsec := cs.liveMaxConsecLosses
-	riskCap := cs.liveDailyRiskCapital
+	targetProfit := cs.liveDailyTargetProfit
 	cs.mu.RUnlock()
-	if maxLoss <= 0 && maxConsec <= 0 && riskCap <= 0 {
+	if maxLoss <= 0 && maxConsec <= 0 && targetProfit <= 0 {
 		return false, ""
 	}
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, ist())
 
-	// Max daily loss: realized LIVE P&L today.
-	if maxLoss > 0 {
-		var realizedLive float64
+	// Realized LIVE P&L today drives both the loss stop and the profit target.
+	var realizedLive float64
+	if maxLoss > 0 || targetProfit > 0 {
 		cs.db.Model(&storage.ChallengeTrade{}).
 			Where("challenge_id = ? AND live = ? AND status = ? AND exit_time >= ?", active.ID, true, "CLOSED", dayStart).
 			Select("COALESCE(SUM(pnl),0)").Scan(&realizedLive)
-		if realizedLive <= -maxLoss {
-			return true, fmt.Sprintf("max daily loss hit (live P&L today ₹%.0f)", realizedLive)
-		}
 	}
-
-	// Day's risk-capital budget: each live trade commits RiskPerTrade.
-	if riskCap > 0 && active.RiskPerTrade > 0 {
-		var liveEntriesToday int64
-		cs.db.Model(&storage.ChallengeTrade{}).
-			Where("challenge_id = ? AND live = ? AND entry_time >= ?", active.ID, true, dayStart).
-			Count(&liveEntriesToday)
-		// Block the trade we're ABOUT to take if it would push committed risk
-		// (trades incl. this one × risk/trade) past the day's budget. This also
-		// blocks the first trade when the budget is smaller than one trade's risk.
-		wouldCommit := float64(liveEntriesToday+1) * active.RiskPerTrade
-		if wouldCommit > riskCap {
-			return true, fmt.Sprintf("daily risk budget ₹%.0f reached: %d live trade(s) already commit ₹%.0f, next would commit ₹%.0f (risk/trade ₹%.0f)",
-				riskCap, liveEntriesToday, float64(liveEntriesToday)*active.RiskPerTrade, wouldCommit, active.RiskPerTrade)
-		}
+	if maxLoss > 0 && realizedLive <= -maxLoss {
+		return true, fmt.Sprintf("max daily loss hit (live P&L today ₹%.0f)", realizedLive)
+	}
+	if targetProfit > 0 && realizedLive >= targetProfit {
+		return true, fmt.Sprintf("daily target profit reached (live P&L today ₹%.0f ≥ ₹%.0f)", realizedLive, targetProfit)
 	}
 
 	// Back-to-back LIVE losses today (trailing streak of losers).
@@ -352,6 +345,8 @@ func (cs *ChallengeService) liveExitReason(open *storage.ChallengeTrade, pnl, qt
 	holdConf := cs.liveHoldConfidence
 	rr := cs.liveRR
 	liveTgt := cs.liveProfitTarget
+	trailSL := cs.liveTrailSL
+	peak := cs.peakPnL
 	cs.mu.RUnlock()
 	if active == nil {
 		return ""
@@ -361,6 +356,12 @@ func (cs *ChallengeService) liveExitReason(open *storage.ChallengeTrade, pnl, qt
 	// 1) Stop-loss — always.
 	if risk > 0 && pnl <= -risk {
 		return fmt.Sprintf("Stop-loss -₹%.0f", risk)
+	}
+
+	// 1b) Trailing stop — once in profit, exit if P&L falls `trailSL` from its
+	// peak. Locks in gains; once it hits, we're out.
+	if trailSL > 0 && peak > 0 && (peak-pnl) >= trailSL {
+		return fmt.Sprintf("Trailing stop: gave back ₹%.0f from peak ₹%.0f (locked ≈₹%.0f)", peak-pnl, peak, pnl)
 	}
 
 	// 2) Signal-based exit — reversal / NO_TRADE / NEUTRAL / confidence collapse.
@@ -459,6 +460,34 @@ func NewScalpChallengeService(db *storage.DB, kc *kite.Client, ticker *kite.Tick
 		minCandles:   205,
 		usePCR:       false,
 		analyze:      options.ScalpAnalyze,
+	}
+	cs.restore()
+
+	if ticker != nil {
+		ticker.OnTick(func(ticks []kite.Tick) {
+			for _, t := range ticks {
+				cs.onTick(t)
+			}
+		})
+	}
+	return cs
+}
+
+// NewSMCChallengeService creates a parallel 90-day challenge that trades the
+// SMC + FVG + VWAP multi-timeframe system (buying ATM weekly CE/PE). It fetches
+// 5-minute NIFTY candles and internally aggregates them to 15-minute bars for the
+// higher-timeframe market-structure / VWAP context. It shares the same storage
+// tables but is fully isolated by its challenge_type ("SMC"), and should be given
+// its OWN ticker so its tick handler doesn't collide with the other challenges.
+func NewSMCChallengeService(db *storage.DB, kc *kite.Client, ticker *kite.Ticker, log *zap.Logger) *ChallengeService {
+	cs := &ChallengeService{
+		db: db, kc: kc, ticker: ticker, log: log,
+		ctype:        "SMC",
+		interval:     "5minute",
+		lookbackDays: 5,
+		minCandles:   120,
+		usePCR:       false,
+		analyze:      options.SMCAnalyze,
 	}
 	cs.restore()
 
@@ -789,8 +818,8 @@ func (cs *ChallengeService) enterTrade(
 		cs.setErr(fmt.Sprintf("LIVE entry skipped: outside trading window %s–%s", winStart, winEnd))
 		live = false
 	}
-	// Daily risk stops (LIVE only): max daily loss, back-to-back losses, day's
-	// risk-capital budget. The paper trade is still recorded either way.
+	// Daily stops (LIVE only): max daily loss, back-to-back losses, and the
+	// day's target profit. The paper trade is still recorded either way.
 	if live {
 		if block, why := cs.liveRiskBlocks(cfg, now); block {
 			cs.log.Info("LIVE entry skipped — daily risk stop", zap.String("why", why))
@@ -1307,10 +1336,11 @@ type ChallengeStatus struct {
 	LiveWindowEnd    string  `json:"live_window_end"`    // "HH:MM" IST entry window end
 	LiveHoldConfidence int   `json:"live_hold_confidence"` // % confidence to keep riding past the floor
 	LiveRR           float64 `json:"live_rr"`            // risk-reward ratio for LIVE exits
-	LiveMaxDailyLoss     float64 `json:"live_max_daily_loss"`     // ₹ daily loss stop for LIVE
-	LiveMaxConsecLosses  int     `json:"live_max_consec_losses"`  // back-to-back LIVE loss stop
-	LiveDailyRiskCapital float64 `json:"live_daily_risk_capital"` // ₹ day's LIVE risk budget
-	LiveMaxEntriesPerDay int     `json:"live_max_entries_per_day"` // max LIVE entries per day (0 = default 3)
+	LiveMaxDailyLoss      float64 `json:"live_max_daily_loss"`      // ₹ daily loss stop for LIVE
+	LiveMaxConsecLosses   int     `json:"live_max_consec_losses"`   // back-to-back LIVE loss stop
+	LiveDailyTargetProfit float64 `json:"live_daily_target_profit"` // ₹ daily profit target (stop after hit)
+	LiveTrailSL           float64 `json:"live_trail_sl"`            // ₹ trailing stop distance
+	LiveMaxEntriesPerDay  int     `json:"live_max_entries_per_day"` // max LIVE entries per day (0 = default 3)
 }
 
 func (cs *ChallengeService) Status() ChallengeStatus {
@@ -1331,7 +1361,8 @@ func (cs *ChallengeService) Status() ChallengeStatus {
 	liveRR := cs.liveRR
 	liveMaxDailyLoss := cs.liveMaxDailyLoss
 	liveMaxConsec := cs.liveMaxConsecLosses
-	liveDailyRiskCap := cs.liveDailyRiskCapital
+	liveDailyTarget := cs.liveDailyTargetProfit
+	liveTrailSL := cs.liveTrailSL
 	liveMaxEntries := cs.liveMaxEntriesPerDay
 	cs.mu.RUnlock()
 
@@ -1344,7 +1375,8 @@ func (cs *ChallengeService) Status() ChallengeStatus {
 		LiveWindowStart: liveWinStart, LiveWindowEnd: liveWinEnd,
 		LiveHoldConfidence: liveHoldConf, LiveRR: liveRR,
 		LiveMaxDailyLoss: liveMaxDailyLoss, LiveMaxConsecLosses: liveMaxConsec,
-		LiveDailyRiskCapital: liveDailyRiskCap, LiveMaxEntriesPerDay: liveMaxEntries,
+		LiveDailyTargetProfit: liveDailyTarget, LiveTrailSL: liveTrailSL,
+		LiveMaxEntriesPerDay: liveMaxEntries,
 	}
 	if active == nil { return s }
 

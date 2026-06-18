@@ -76,7 +76,8 @@ func (h *Handler) ScalpChallengeLiveConfig(c *gin.Context) {
 		RR             float64 `json:"rr"`
 		MaxDailyLoss     float64 `json:"max_daily_loss"`
 		MaxConsecLosses  int     `json:"max_consec_losses"`
-		DailyRiskCapital float64 `json:"daily_risk_capital"`
+		DailyTargetProfit float64 `json:"daily_target_profit"`
+		TrailSL           float64 `json:"trail_sl"`
 		MaxEntriesPerDay int     `json:"max_entries_per_day"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -94,7 +95,8 @@ func (h *Handler) ScalpChallengeLiveConfig(c *gin.Context) {
 		RR:             body.RR,
 		MaxDailyLoss:     body.MaxDailyLoss,
 		MaxConsecLosses:  body.MaxConsecLosses,
-		DailyRiskCapital: body.DailyRiskCapital,
+		DailyTargetProfit: body.DailyTargetProfit,
+		TrailSL:           body.TrailSL,
 		MaxEntriesPerDay: body.MaxEntriesPerDay,
 	}); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})

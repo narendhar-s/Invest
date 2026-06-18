@@ -14,6 +14,7 @@ const GROUPS: NavGroup[] = [
       { to: '/kite-terminal',    label: 'Kite Terminal',    desc: 'Live signals · Paper trade · Backtest' },
       { to: '/challenge',        label: '🏆 90-Day Challenge', desc: 'PCR-filtered signals · real LTP · all trades in DB' },
       { to: '/scalp-challenge',  label: '⚡ 90-Day Scalp',     desc: 'EMA50/200 + Stochastic · 1-min · ATM CE/PE' },
+      { to: '/smc-challenge',    label: '🎯 90-Day SMC',       desc: 'SMC + FVG + VWAP · 5-min / 15-min HTF · ATM CE/PE' },
       { to: '/strategy-compare', label: '📚 Book Strategies', desc: '7 famous book strategies · ranked backtest' },
       { to: '/kite-terminal?tab=signals',  label: '↳ Live Signals',    desc: 'Nifty 15m · regime · strategy' },
       { to: '/kite-terminal?tab=paper',    label: '↳ Paper Trade',     desc: 'Auto/manual · RR 1:2 · P&L' },

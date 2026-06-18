@@ -39,7 +39,17 @@ func InitChallenge(db *storage.DB, kc *kite.Client, ticker *kite.Ticker, logger 
 	scalpChallengeSvc.SetLiveAllowed(liveAllowed) // same master kill-switch as the options challenge
 	scalpChallengeSvc.Start()
 
-	logger.Info("challenge services initialised (options + scalp)")
+	// Parallel 90-day SMC challenge (SMC + FVG + VWAP, 5-min entries on a 15-min
+	// HTF context, ATM weekly CE/PE). It also gets its OWN WebSocket ticker so its
+	// tick handler doesn't overwrite the other challenges' callbacks.
+	smcTicker := kite.NewTicker(kc)
+	smcTicker.Subscribe(kite.NiftyIndexToken)
+	smcTicker.Start()
+	smcChallengeSvc = paper.NewSMCChallengeService(db, kc, smcTicker, logger)
+	smcChallengeSvc.SetLiveAllowed(liveAllowed) // same master kill-switch as the other challenges
+	smcChallengeSvc.Start()
+
+	logger.Info("challenge services initialised (options + scalp + smc)")
 }
 
 // StartTelegram launches the Telegram remote-control bot if enabled. It binds to
@@ -144,7 +154,8 @@ func (h *Handler) ChallengeLiveConfig(c *gin.Context) {
 		RR             float64 `json:"rr"`
 		MaxDailyLoss     float64 `json:"max_daily_loss"`
 		MaxConsecLosses  int     `json:"max_consec_losses"`
-		DailyRiskCapital float64 `json:"daily_risk_capital"`
+		DailyTargetProfit float64 `json:"daily_target_profit"`
+		TrailSL           float64 `json:"trail_sl"`
 		MaxEntriesPerDay int     `json:"max_entries_per_day"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -162,7 +173,8 @@ func (h *Handler) ChallengeLiveConfig(c *gin.Context) {
 		RR:             body.RR,
 		MaxDailyLoss:     body.MaxDailyLoss,
 		MaxConsecLosses:  body.MaxConsecLosses,
-		DailyRiskCapital: body.DailyRiskCapital,
+		DailyTargetProfit: body.DailyTargetProfit,
+		TrailSL:           body.TrailSL,
 		MaxEntriesPerDay: body.MaxEntriesPerDay,
 	}); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
